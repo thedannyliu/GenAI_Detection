@@ -1,0 +1,114 @@
+# Configuration for parameter-efficient fine-tuning (prompt tuning and adapters)
+
+# General settings
+output_dir: "results/param_efficient"
+seed: 42
+
+# Model settings
+model:
+  type: "clip"
+  name: "openai/clip-vit-base-patch32"
+  mode: "efficient-tune"  # Special mode for parameter-efficient methods
+  tuning_method: "prompt"  # Options: "prompt", "adapter", "lora"
+  
+  # Prompt Tuning Settings (when tuning_method = "prompt")
+  prompt_tuning:
+    prompt_length: 10  # Number of learnable prompt tokens
+    initialization: "random"  # Options: "random", "text", "class-specific"
+    text_init: "a photo of"  # Used when initialization = "text"
+    learn_class_specific: true  # Whether to learn separate prompts for each class
+    apply_to: "text"  # Options: "text", "image", "both"
+  
+  # Adapter Settings (when tuning_method = "adapter")
+  adapter:
+    reduction_factor: 16  # Bottleneck reduction
+    adapter_type: "parallel"  # Options: "parallel", "sequential"
+    add_layer_norm: true
+    add_residual: true
+    non_linearity: "relu"
+    apply_to: "visual"  # Options: "visual", "text", "both"
+    
+  # LoRA Settings (when tuning_method = "lora")
+  lora:
+    rank: 8  # Rank of LoRA decomposition
+    alpha: 16  # LoRA scaling factor
+    apply_to_layers: ["qkv"]  # Which weights to apply LoRA to: "q", "k", "v", "qk", "qv", "kv", or "qkv"
+    apply_to: "both"  # Options: "visual", "text", "both"
+
+# Data settings
+data:
+  batch_size: 64
+  num_workers: 4
+  
+  # For prompt tuning, we can try different-sized datasets
+  use_subset: true
+  subset_size: 0.1  # Start with 10% for prompt tuning (few-shot setting)
+  
+  # Class balancing is important for small datasets
+  balanced_sampling: true
+  
+  # Augmentation can be lighter for parameter-efficient methods
+  augmentation: "light"
+
+# Training settings
+training:
+  # Optimization - higher learning rates work well for prompt tuning
+  optimizer: "adamw"
+  learning_rate: 1e-2  # Higher LR for prompt tuning
+  weight_decay: 0.0  # Often no need for weight decay with prompt tuning
+  
+  # Scheduler
+  scheduler: "cosine"
+  warmup_epochs: 0  # Often not needed for small parameter sets
+  min_lr: 1e-4
+  
+  # Training loop
+  num_epochs: 20
+  mixed_precision: true
+  
+  # Checkpointing
+  checkpoint_dir: "results/param_efficient/saved_models"
+  save_frequency: 1
+  save_best_only: true
+  
+  # Early stopping
+  early_stopping: true
+  patience: 5
+  
+  # Logging
+  log_frequency: 10
+  use_tensorboard: true
+
+# Evaluation settings
+evaluation:
+  # Metrics
+  metrics:
+    - accuracy
+    - auc
+    - precision
+    - recall
+    - f1
+  
+  # Compare with other methods
+  compare_with_baselines: true
+  baseline_checkpoints:
+    zero_shot: "results/zero_shot/saved_models/best_model.pth"
+    fine_tuned: "results/fine_tuned/saved_models/best_model.pth"
+    cnn: "results/cnn_baseline/saved_models/best_model.pth"
+  
+  # Few-shot analysis - evaluate with different amounts of training data
+  few_shot_analysis: true
+  shots_to_evaluate: [1, 2, 4, 8, 16, 32, 64, "full"]
+  
+  # Cross-generator evaluation
+  evaluate_on_all_generators: true
+  
+  # Visualization
+  generate_plots: true
+  plot_dir: "results/param_efficient/figures"
+  
+  # Analyze learned prompts (for prompt tuning)
+  analyze_prompts: true
+  
+  # Parameter efficiency analysis
+  count_parameters: true 

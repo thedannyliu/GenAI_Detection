@@ -1,0 +1,81 @@
+# Configuration for CNN baseline model (ResNet-50)
+
+# General settings
+output_dir: "results/cnn_baseline"
+seed: 42
+
+# Model settings
+model:
+  type: "resnet"
+  name: "resnet50"  # Options: "resnet18", "resnet34", "resnet50", "resnet101"
+  pretrained: true  # Use ImageNet pretrained weights
+  freeze_backbone: false  # Train the entire model
+  num_classes: 2
+
+# Data settings
+data:
+  batch_size: 64
+  num_workers: 4
+  
+  # Data augmentation for CNNs
+  augmentation: "heavy"  # CNNs benefit from stronger augmentation
+  
+  # Since we're training from scratch or fine-tuning everything,
+  # we might need more data than for VLM fine-tuning
+  use_subset: false
+
+# Training settings
+training:
+  # Optimization - CNNs often use SGD with momentum
+  optimizer: "sgd"  # Options: "sgd", "adam", "adamw" 
+  learning_rate: 0.01  # Higher initial LR for SGD
+  weight_decay: 5e-4
+  momentum: 0.9
+  
+  # Scheduler - step LR is common for CNNs
+  scheduler: "step"
+  step_size: 10
+  gamma: 0.1
+  
+  # Training loop
+  num_epochs: 30  # CNNs typically need more epochs
+  mixed_precision: true
+  
+  # Checkpointing
+  checkpoint_dir: "results/cnn_baseline/saved_models"
+  save_frequency: 5
+  save_best_only: true
+  
+  # Early stopping
+  early_stopping: true
+  patience: 5
+  
+  # Logging
+  log_frequency: 20
+  use_tensorboard: true
+
+# Evaluation settings
+evaluation:
+  # Metrics
+  metrics:
+    - accuracy
+    - auc
+    - precision
+    - recall
+    - f1
+  
+  # Visualization
+  generate_plots: true
+  plot_dir: "results/cnn_baseline/figures"
+  
+  # Explainability
+  generate_gradcam: true
+  num_gradcam_samples: 16
+  gradcam_layer: "layer4"  # Last ResNet layer
+  
+  # Compare with VLMs
+  compare_with_vlm: true
+  vlm_checkpoint: "results/fine_tuned/saved_models/best_model.pth"
+  
+  # Cross-generator evaluation (important for baseline comparison)
+  evaluate_on_all_generators: true 

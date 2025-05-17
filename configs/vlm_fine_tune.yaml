@@ -1,0 +1,95 @@
+# Configuration for fine-tuning VLM models
+
+# General settings
+output_dir: "results/fine_tuned"
+seed: 42
+
+# Model settings
+model:
+  type: "clip"
+  name: "openai/clip-vit-base-patch32"  # Base model is sufficient for fine-tuning
+  mode: "fine-tune"
+  freeze_backbone: true  # Freeze backbone initially for faster convergence
+  num_classes: 2
+
+# Data settings
+data:
+  batch_size: 32
+  num_workers: 4
+  
+  # Data augmentation strength
+  augmentation: "medium"  # Options: "light", "medium", "heavy"
+  
+  # Class balancing
+  balanced_sampling: true
+  
+  # If we need to use a subset for faster iterations
+  use_subset: false
+  subset_size: 0.1  # 10% of the data
+
+# Training settings
+training:
+  # Optimization
+  optimizer: "adamw"
+  learning_rate: 1e-4  # Higher learning rate for classifier-only training
+  weight_decay: 0.01
+  
+  # Progressive unfreezing (optional)
+  progressive_unfreezing: false
+  unfreeze_after_epoch: 3  # Unfreeze backbone after this epoch
+  backbone_lr_multiplier: 0.1  # Use lower LR for backbone when unfrozen
+  
+  # Scheduler
+  scheduler: "cosine"
+  warmup_epochs: 1
+  min_lr: 1e-6
+  
+  # Training loop
+  num_epochs: 10
+  mixed_precision: true
+  
+  # Checkpointing
+  checkpoint_dir: "results/fine_tuned/saved_models"
+  save_frequency: 1
+  save_best_only: true
+  
+  # Early stopping
+  early_stopping: true
+  patience: 3
+  
+  # Logging
+  log_frequency: 10
+  use_tensorboard: true
+
+# Evaluation settings
+evaluation:
+  # Metrics
+  metrics:
+    - accuracy
+    - auc
+    - precision
+    - recall
+    - f1
+  
+  # Test time augmentation (optional)
+  test_time_augmentation: false
+  tta_transforms: 3  # Number of augmentations per sample
+  
+  # Cross-generator evaluation
+  evaluate_on_all_generators: true
+  
+  # Visualization
+  generate_plots: true
+  plot_dir: "results/fine_tuned/figures"
+  
+  # Explainability
+  generate_gradcam: true
+  num_gradcam_samples: 16
+  gradcam_layer: "visual.transformer.resblocks.11"
+  
+  # Robustness testing
+  evaluate_robustness: false
+  robustness_transforms:
+    - "jpeg_compression"
+    - "gaussian_noise"
+    - "gaussian_blur" 
