@@ -35,6 +35,7 @@ ENV/
 env/
 
 # Model checkpoints and results
+results/*
 results/saved_models/*.pth
 results/logs/
 results/evaluation/*.csv
@@ -45,6 +46,7 @@ results/zero_shot/
 results/fine_tuned/
 results/param_efficient/
 results/cnn_baseline/
+!results/README.md
 
 # IDE files
 .idea/
