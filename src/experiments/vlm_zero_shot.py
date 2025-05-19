@@ -8,8 +8,8 @@ from tqdm import tqdm
 from sklearn.metrics import confusion_matrix, classification_report
 import matplotlib.pyplot as plt
 import seaborn as sns
-import json # For saving detailed results
-import contextlib # For torch.autocast
+import json  # For saving detailed results
+import contextlib  # For torch.autocast
 
 # VLM imports
 import open_clip
@@ -20,89 +20,46 @@ from transformers import (
     BlipForConditionalGeneration,
     InstructBlipProcessor,
     InstructBlipForConditionalGeneration,
-    AutoTokenizer, # For Flamingo's LM
-    ViTModel, # Example for Flamingo's Vision Encoder
-    AutoModelForCausalLM, # Ensure this is imported if used for Flamingo LM
-    GenerationConfig 
+    AutoTokenizer,  # For Flamingo's LM
+    ViTModel,  # Example for Flamingo's Vision Encoder
+    AutoModelForCausalLM,
+    GenerationConfig
 )
-# Flamingo import will be skipped for now
-# from flamingo_pytorch.flamingo_pytorch import Flamingo 
 
 # Define the prompts structure as provided by the user
 USER_PROMPTS = [
-    {
-        "id": "1.1",
-        "question": None, # For similarity-based models like CLIP
-        "options": {"real": "This is a real photograph.", "fake": "This is an AI-generated image."}
-    },
-    {
-        "id": "1.2",
-        "question": None,
-        "options": {"real": "An authentic, unaltered photograph.", "fake": "An image fabricated by an artificial intelligence."}
-    },
-    {
-        "id": "2.1",
-        "question": None,
-        "options": {"real": "A photograph taken by a physical camera.", "fake": "An image created by a computer algorithm."}
-    },
-    {
-        "id": "3.1",
-        "question": None,
-        "options": {"real": "A natural image with authentic textures, lighting, and imperfections.", 
-                      "fake": "A synthetic image, potentially exhibiting overly smooth areas, unusual patterns, or digital artifacts."}
-    },
-    {
-        "id": "4.1",
-        "question": None,
-        "options": {"real": "This image documents a real event or subject.", 
-                      "fake": "This image is an artistic or illustrative creation by an AI."}
-    },
-    {
-        "id": "5.1",
-        "question": None,
-        "options": {"real": "Genuine.", "fake": "Artificial."}
-    },
-    {
-        "id": "5.2",
-        "question": None,
-        "options": {"real": "Real.", "fake": "Fake."}
-    },
-    {
-        "id": "6.1",
-        "question": "Is this image a real photograph or an AI-generated image?", # For generative models
-        "options": {"real": "Real photograph.", "fake": "AI-generated image."}
-    }
+    {"id": "1.1", "question": None, "options": {"real": "This is a real photograph.", "fake": "This is an AI-generated image."}},
+    {"id": "1.2", "question": None, "options": {"real": "An authentic, unaltered photograph.", "fake": "An image fabricated by an artificial intelligence."}},
+    {"id": "2.1", "question": None, "options": {"real": "A photograph taken by a physical camera.", "fake": "An image created by a computer algorithm."}},
+    {"id": "3.1", "question": None, "options": {"real": "A natural image with authentic textures, lighting, and imperfections.", "fake": "A synthetic image, potentially exhibiting overly smooth areas, unusual patterns, or digital artifacts."}},
+    {"id": "4.1", "question": None, "options": {"real": "This image documents a real event or subject.", "fake": "This image is an artistic or illustrative creation by an AI."}},
+    {"id": "5.1", "question": None, "options": {"real": "Genuine.", "fake": "Artificial."}},
+    {"id": "5.2", "question": None, "options": {"real": "Real.", "fake": "Fake."}},
+    {"id": "6.1", "question": "Is this image a real photograph or an AI-generated image?", "options": {"real": "Real photograph.", "fake": "AI-generated image."}}
 ]
 
 class VLMZeroShotExperiment:
     def __init__(self, data_path, num_samples=25, results_dir="results/vlm_zero_shot_detailed", specific_gpu_id=None):
         self.data_path = Path(data_path)
         self.num_samples = num_samples
-        
-        if specific_gpu_id is not None and torch.cuda.is_available():
-            self.device = torch.device(f"cuda:{specific_gpu_id}")
-        else:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(f"cuda:{specific_gpu_id}") if specific_gpu_id is not None and torch.cuda.is_available() else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Using device: {self.device}")
 
         self.results_dir = Path(results_dir)
         self.results_dir.mkdir(parents=True, exist_ok=True)
-        
         self.prompts_config = USER_PROMPTS
-        
+
         # Define model configurations
         self.model_configs = {
             "CLIP": {"type": "clip", "model_name": 'ViT-L-14', "pretrained": 'openai'},
             "BLIP": {"type": "generative", "model_name": "Salesforce/blip-image-captioning-large", "dtype": torch.float16},
             "InstructBLIP": {"type": "generative", "model_name": "Salesforce/instructblip-flan-t5-xl", "dtype": torch.float16},
             "LLaVA": {"type": "generative", "model_name": "llava-hf/llava-1.5-7b-hf", "dtype": torch.float16, "low_cpu_mem_usage": True},
-            # "Flamingo": {"type": "flamingo", ...} # Skipped
         }
-        self.model_names_to_run = ["CLIP", "BLIP", "InstructBLIP", "LLaVA"] # Excluding Flamingo
-        
+        self.model_names_to_run = ["CLIP", "BLIP", "InstructBLIP", "LLaVA"]
         self.loaded_model_instance = None
         self.loaded_processor_instance = None
-        
+
     def load_model(self, model_name_to_load):
         if model_name_to_load not in self.model_configs:
             print(f"Configuration for model {model_name_to_load} not found. Skipping.")
@@ -110,68 +67,82 @@ class VLMZeroShotExperiment:
 
         config = self.model_configs[model_name_to_load]
         model_type = config["type"]
-        
+
         try:
             print(f"Initializing {model_name_to_load} ({config['model_name']})...")
             if model_type == "clip":
                 model, _, processor = open_clip.create_model_and_transforms(config['model_name'], pretrained=config['pretrained'])
                 self.loaded_model_instance = model.to(self.device)
                 self.loaded_processor_instance = processor
+
             elif model_type == "generative":
-                processor_class = AutoProcessor
-                model_class = AutoModelForCausalLM # Default, will be overridden
-                
+                # choose processor and model classes
                 if model_name_to_load == "BLIP":
                     processor_class = BlipProcessor
                     model_class = BlipForConditionalGeneration
                 elif model_name_to_load == "InstructBLIP":
                     processor_class = InstructBlipProcessor
                     model_class = InstructBlipForConditionalGeneration
-                elif model_name_to_load == "LLaVA":
-                    processor_class = AutoProcessor # LLaVA uses AutoProcessor
+                else:  # LLaVA
+                    processor_class = AutoProcessor
                     model_class = LlavaForConditionalGeneration
-                
+
+                # load processor & model
                 self.loaded_processor_instance = processor_class.from_pretrained(config['model_name'])
-                
                 model_args = {"torch_dtype": config.get("dtype", torch.float32)}
-                if "low_cpu_mem_usage" in config:
-                    model_args["low_cpu_mem_usage"] = config["low_cpu_mem_usage"]
-                
+                if config.get("low_cpu_mem_usage", False):
+                    model_args["low_cpu_mem_usage"] = True
                 self.loaded_model_instance = model_class.from_pretrained(config['model_name'], **model_args).to(self.device)
-            # Add other model types like Flamingo here if re-enabled
+
+                # --- NEW: explicitly set pad_token_id and eos_token_id ---
+                tokenizer = getattr(self.loaded_processor_instance, 'tokenizer', None)
+                if tokenizer is not None:
+                    pad_id = tokenizer.pad_token_id
+                    eos_id = tokenizer.eos_token_id
+                else:
+                    pad_id = self.loaded_model_instance.config.pad_token_id
+                    eos_id = self.loaded_model_instance.config.eos_token_id
+                # fallback to decoder_start_token_id if needed
+                if eos_id is None and hasattr(self.loaded_model_instance.config, 'decoder_start_token_id'):
+                    eos_id = self.loaded_model_instance.config.decoder_start_token_id
+                # set them on model config
+                if pad_id is not None:
+                    self.loaded_model_instance.config.pad_token_id = pad_id
+                if eos_id is not None:
+                    self.loaded_model_instance.config.eos_token_id = eos_id
+                # -------------------------------------------------------
+
             else:
                 print(f"Unknown model type {model_type} for {model_name_to_load}. Skipping.")
                 return False
-                
+
             print(f"{model_name_to_load} initialized successfully.")
             return True
+
         except Exception as e:
-            print(f"Error initializing {model_name_to_load} ({config.get('model_name', 'N/A')}): {e}")
+            print(f"Error initializing {model_name_to_load} ({config.get('model_name')}): {e}")
             self.loaded_model_instance = None
             self.loaded_processor_instance = None
             if self.device.type == 'cuda':
-                torch.cuda.empty_cache() # Attempt to clean up memory
+                torch.cuda.empty_cache()
             return False
 
     def unload_model(self):
         print(f"Unloading current model...")
-        del self.loaded_model_instance
-        del self.loaded_processor_instance
+        del self.loaded_model_instance, self.loaded_processor_instance
         self.loaded_model_instance = None
         self.loaded_processor_instance = None
         if self.device.type == 'cuda':
             torch.cuda.empty_cache()
-        print("Model unloaded and CUDA cache cleared (if applicable).")
+        print("Model unloaded and CUDA cache cleared.")
 
     def load_random_samples(self):
-        real_images_paths = sorted(list((self.data_path / "0_real").glob("*.jpg")) + list((self.data_path / "0_real").glob("*.png")) + list((self.data_path / "0_real").glob("*.jpeg")))
-        fake_images_paths = sorted(list((self.data_path / "1_fake").glob("*.jpg")) + list((self.data_path / "1_fake").glob("*.png")) + list((self.data_path / "1_fake").glob("*.jpeg")))
-        random.seed(42) 
-        selected_real = random.sample(real_images_paths, min(self.num_samples, len(real_images_paths)))
-        selected_fake = random.sample(fake_images_paths, min(self.num_samples, len(fake_images_paths)))
-        print(f"Selected {len(selected_real)} real images and {len(selected_fake)} fake images.")
-        # Ensure labels are integers (0 for real, 1 for fake)
-        return {str(p): 0 for p in selected_real} | {str(p): 1 for p in selected_fake}
+        real_paths = list((self.data_path / "0_real").glob("*.*"))
+        fake_paths = list((self.data_path / "1_fake").glob("*.*"))
+        random.seed(42)
+        real = random.sample(real_paths, min(self.num_samples, len(real_paths)))
+        fake = random.sample(fake_paths, min(self.num_samples, len(fake_paths)))
+        return {str(p): 0 for p in real} | {str(p): 1 for p in fake}
 
     def _predict_clip_with_prompt(self, image_pil, processor, model, prompt_options):
         texts = [prompt_options['real'], prompt_options['fake']]

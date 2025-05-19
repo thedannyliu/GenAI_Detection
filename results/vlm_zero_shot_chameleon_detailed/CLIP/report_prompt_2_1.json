@@ -1,27 +1,27 @@
 {
     "real (0)": {
-        "precision": 0.5208333333333334,
-        "recall": 1.0,
-        "f1-score": 0.684931506849315,
+        "precision": 0.5217391304347826,
+        "recall": 0.96,
+        "f1-score": 0.676056338028169,
         "support": 25.0
     },
     "fake (1)": {
-        "precision": 1.0,
-        "recall": 0.08,
-        "f1-score": 0.14814814814814814,
+        "precision": 0.75,
+        "recall": 0.12,
+        "f1-score": 0.20689655172413793,
         "support": 25.0
     },
     "accuracy": 0.54,
     "macro avg": {
-        "precision": 0.7604166666666667,
+        "precision": 0.6358695652173914,
         "recall": 0.54,
-        "f1-score": 0.4165398274987316,
+        "f1-score": 0.44147644487615345,
         "support": 50.0
     },
     "weighted avg": {
-        "precision": 0.7604166666666667,
+        "precision": 0.6358695652173912,
         "recall": 0.54,
-        "f1-score": 0.4165398274987316,
+        "f1-score": 0.44147644487615345,
         "support": 50.0
     }
 }
