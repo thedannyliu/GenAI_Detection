@@ -1,0 +1,27 @@
+{
+    "real (0)": {
+        "precision": 0.5454545454545454,
+        "recall": 0.24,
+        "f1-score": 0.3333333333333333,
+        "support": 25.0
+    },
+    "fake (1)": {
+        "precision": 0.5128205128205128,
+        "recall": 0.8,
+        "f1-score": 0.625,
+        "support": 25.0
+    },
+    "accuracy": 0.52,
+    "macro avg": {
+        "precision": 0.5291375291375291,
+        "recall": 0.52,
+        "f1-score": 0.47916666666666663,
+        "support": 50.0
+    },
+    "weighted avg": {
+        "precision": 0.5291375291375291,
+        "recall": 0.52,
+        "f1-score": 0.47916666666666663,
+        "support": 50.0
+    }
+}
