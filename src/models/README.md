@@ -2,10 +2,17 @@
 
 This module contains model architectures for AI-generated image detection. It includes baseline CNN classifiers and Vision-Language Model (VLM) wrappers with support for zero-shot inference, fine-tuning, and parameter-efficient adaptation.
 
-## Key Files
+## Key Files and Structure
 
-- `baseline_classifiers.py`: Traditional CNN models like ResNet
-- `vlm_models.py`: Wrappers for CLIP, BLIP, and other VLMs
+- `baseline_classifiers.py`: Traditional CNN models like ResNet.
+- `vlm/`: A sub-directory dedicated to Vision-Language Models.
+    - `base_vlm.py`: Defines an abstract base class `BaseVLM` for all VLM implementations, ensuring a consistent interface for loading models and making predictions.
+    - `clip_model.py`: Wrapper for CLIP models.
+    - `blip_model.py`: Wrapper for BLIP models.
+    - `instruct_blip_model.py`: Wrapper for InstructBLIP models.
+    - `llava_model.py`: Wrapper for LLaVA models.
+    - `README.md`: (To be created) Documentation specific to the VLM submodule.
+- `vlm_models.py`: May contain older VLM wrappers or utility classes for VLMs like `PromptTuningWrapper` and `AdapterEnhancedModel`. (Note: Core VLM implementations are now in the `vlm/` subdirectory).
 
 ## Available Models
 
@@ -29,52 +36,107 @@ model = ResNet50Classifier(
 logits = model(images)          # shape: [batch_size, 2]
 ```
 
-### Vision-Language Models
+### Vision-Language Models (New Structure)
 
-#### CLIPModel
+The core VLM implementations are now located under the `src.models.vlm` submodule and inherit from `BaseVLM`. These models are designed for zero-shot inference using official pre-trained weights and can be extended for fine-tuning or other adaptations.
 
-Wrapper for OpenAI's CLIP model, supporting both zero-shot and fine-tuning:
-
+#### `BaseVLM` (Abstract Class)
+Located in `src.models.vlm.base_vlm`, this class provides the blueprint for VLM wrappers:
 ```python
-from src.models.vlm_models import CLIPModel
+from src.models.vlm.base_vlm import BaseVLM
+# Subclasses implement _load_model() and predict()
 
-# Zero-shot mode
-zero_shot_model = CLIPModel(
-    model_name="openai/clip-vit-base-patch32",
-    mode="zero-shot"
-)
+# Example usage (conceptual):
+# class MyVLM(BaseVLM):
+#     def _load_model(self): # ...
+#     def predict(self, image, text_prompts): # ...
 
-# Get zero-shot predictions
-prompts = ["a real photo", "an AI-generated image"]
-probabilities = zero_shot_model.predict_zero_shot(images, prompts)
-
-# Fine-tuning mode
-fine_tuned_model = CLIPModel(
-    model_name="openai/clip-vit-base-patch32",
-    mode="fine-tune",
-    freeze_backbone=True,       # Only train the classification head
-    num_classes=2
-)
-
-# Forward pass for fine-tuned model
-logits = fine_tuned_model(images)  # shape: [batch_size, 2]
+# model_instance = MyVLM(model_name="my_vlm_identifier", config=model_specific_config)
+# results = model_instance.predict(pil_image, ["prompt1", "prompt2"])
 ```
 
-#### BLIPModel
-
-Wrapper for Salesforce's BLIP with VQA-style adaptation:
-
+#### CLIPModelWrapper
+Wrapper for OpenAI's CLIP model, primarily for zero-shot classification.
+Located in `src.models.vlm.clip_model`.
 ```python
-from src.models.vlm_models import BLIPModel
+from src.models.vlm.clip_model import CLIPModelWrapper
+from PIL import Image
 
-model = BLIPModel(
-    model_name="Salesforce/blip-image-captioning-base",
-    mode="vqa",                 # Use visual question answering head
-    freeze_backbone=True
-)
+# Configuration for the model (passed during instantiation)
+clip_config = {"model_id": "openai/clip-vit-large-patch14"} 
 
-# Forward pass
-logits = model(images)
+# Initialize model
+clip_vlm = CLIPModelWrapper(model_name="CLIP", config=clip_config)
+
+# Example image and prompts
+img = Image.open("path/to/your/image.jpg")
+prompts = ["a real photograph", "an AI-generated image"]
+
+# Get zero-shot predictions (dictionary of prompt: score)
+probabilities = clip_vlm.predict(img, prompts)
+print(probabilities)
+```
+
+#### BlipModelWrapper
+Wrapper for Salesforce's BLIP model, configured for image-text matching for zero-shot classification.
+Located in `src.models.vlm.blip_model`.
+```python
+from src.models.vlm.blip_model import BlipModelWrapper
+from PIL import Image
+
+blip_config = {
+    "model_id": "Salesforce/blip-itm-large-eval", # For image-text matching
+    "task": "image-text-matching"
+}
+blip_vlm = BlipModelWrapper(model_name="BLIP-ITM", config=blip_config)
+
+img = Image.open("path/to/your/image.jpg")
+prompts = ["a real photograph", "an AI-generated image"]
+probabilities = blip_vlm.predict(img, prompts)
+print(probabilities)
+```
+
+#### InstructBlipModelWrapper
+Wrapper for Salesforce's InstructBLIP model. Zero-shot classification is performed by asking a question and checking if the generated response contains any of the target prompts.
+Located in `src.models.vlm.instruct_blip_model`.
+```python
+from src.models.vlm.instruct_blip_model import InstructBlipModelWrapper
+from PIL import Image
+
+instruct_blip_config = {
+    "model_id": "Salesforce/instructblip-vicuna-7b",
+    "instructblip_question": "Is this image a real photograph or an AI-generated image? Answer:",
+    "max_new_tokens": 50
+}
+instruct_blip_vlm = InstructBlipModelWrapper(model_name="InstructBLIP", config=instruct_blip_config)
+
+img = Image.open("path/to/your/image.jpg")
+prompts_to_check = ["real photograph", "ai-generated image"] # keywords to find in response
+scores = instruct_blip_vlm.predict(img, prompts_to_check) # returns {prompt: 1.0 or 0.0}
+print(scores)
+```
+
+#### LlavaModelWrapper
+Wrapper for LLaVA models (e.g., `llava-hf/llava-1.5-7b-hf`). Zero-shot classification involves prompting with a question and checking the generated response.
+Located in `src.models.vlm.llava_model`.
+```python
+from src.models.vlm.llava_model import LlavaModelWrapper
+from PIL import Image
+
+llava_config = {
+    "model_id": "llava-hf/llava-1.5-7b-hf",
+    # The prompt template might need adjustment based on the specific LLaVA version
+    "llava_prompt_template": "USER: <image>\n{} ASSISTANT:", 
+    "llava_question": "Is this image a real photograph or an AI-generated image? Please answer with 'real photograph' or 'AI-generated image'.",
+    "max_new_tokens": 70 
+}
+llava_vlm = LlavaModelWrapper(model_name="LLaVA", config=llava_config)
+
+img = Image.open("path/to/your/image.jpg")
+# Prompts here are the expected phrases in the answer
+phrases_to_check_in_answer = ["real photograph", "ai-generated image"] 
+scores = llava_vlm.predict(img, phrases_to_check_in_answer) # returns {phrase: 1.0 or 0.0}
+print(scores)
 ```
 
 ### Parameter-Efficient Adaptation
@@ -137,35 +199,96 @@ adapter_model = AdapterEnhancedModel(
 
 ## Model Saving and Loading
 
-```python
-# Save a model
-torch.save(model.state_dict(), "results/saved_models/clip_finetuned.pth")
+Model saving and loading will generally use `torch.save` and `model.load_state_dict()`.
+For the new VLM wrappers, you would instantiate the wrapper first, then load the state dict.
+Note that only parameters of `self.model` (the Hugging Face model) are typically saved/loaded unless you have custom trainable parameters in the wrapper itself.
 
-# Load a model
-model = CLIPModel(model_name="openai/clip-vit-base-patch32", mode="fine-tune")
-model.load_state_dict(torch.load("results/saved_models/clip_finetuned.pth"))
-model.eval()
+```python
+from src.models.vlm.clip_model import CLIPModelWrapper
+import torch
+
+# Example for saving (assuming you've trained parts of the HF model or a head)
+# For our zero-shot wrappers, direct saving/loading of the wrapper itself might not be common
+# as they load pre-trained weights. If fine-tuning is added to these wrappers, then saving is key.
+
+# To save the underlying Hugging Face model if it were fine-tuned through the wrapper:
+# clip_vlm.model.save_pretrained("path/to/save/my_finetuned_clip_hf_model")
+# clip_vlm.processor.save_pretrained("path/to/save/my_finetuned_clip_hf_model")
+
+# If the wrapper itself has trainable parameters (e.g., a custom classification head not part of BaseVLM yet):
+# torch.save(clip_vlm.state_dict(), "results/saved_models/my_clip_wrapper.pth")
+
+# Loading example:
+# clip_config = {"model_id": "path/to/save/my_finetuned_clip_hf_model"} # if HF model was saved
+# loaded_clip_vlm = CLIPModelWrapper(model_name="CLIP", config=clip_config)
+# If wrapper state was saved:
+# loaded_clip_vlm.load_state_dict(torch.load("results/saved_models/my_clip_wrapper.pth"))
+# loaded_clip_vlm.eval()
+```
+The original README showed saving `model.state_dict()`. This applies if `model` is an `nn.Module`.
+Our `BaseVLM` subclasses *are not* `nn.Module` themselves (they *contain* an `nn.Module` at `self.model`).
+If you intend to fine-tune these VLMs and save them, you'd typically save the state of `self.model` (the Hugging Face model).
+
+If `CLIPModel` from `vlm_models.py` (which *is* an `nn.Module`) is used for fine-tuning:
+```python
+# Assuming CLIPModel from vlm_models.py is used for fine-tuning
+# from src.models.vlm_models import CLIPModel
+# model_to_save_load = CLIPModel(model_name="openai/clip-vit-base-patch32", mode="fine-tune", num_classes=2)
+# ... training ...
+# torch.save(model_to_save_load.state_dict(), "results/saved_models/clip_finetuned_from_vlm_models_py.pth")
+
+# model_to_load = CLIPModel(model_name="openai/clip-vit-base-patch32", mode="fine-tune", num_classes=2)
+# model_to_load.load_state_dict(torch.load("results/saved_models/clip_finetuned_from_vlm_models_py.pth"))
+# model_to_load.eval()
 ```
 
 ## Creating Custom Models
 
-To add a new model, follow these steps:
+To add a new VLM based on the new structure:
+1. Create a new Python file in `src/models/vlm/` (e.g., `my_new_vlm.py`).
+2. Define a class that inherits from `src.models.vlm.base_vlm.BaseVLM`.
+3. Implement the `__init__` method:
+    - Call `super().__init__(model_name, config)`.
+    - The `config` dictionary can be used to pass model-specific parameters like `model_id` from Hugging Face, or any other operational parameters.
+4. Implement the `_load_model(self)` method:
+    - Load your pre-trained model and any necessary processors (e.g., from Hugging Face Transformers).
+    - Store them as `self.model` and `self.processor`.
+    - Ensure the model is in evaluation mode (`self.model.eval()`) if primarily used for inference.
+    - Handle device placement (e.g., move to CUDA if available).
+5. Implement the `predict(self, image: PIL.Image.Image, text_prompts: List[str]) -> Dict[str, float]` method:
+    - Take a PIL Image and a list of text prompts as input.
+    - Perform the VLM's prediction logic.
+    - Return a dictionary where keys are the input `text_prompts` (or derived concepts) and values are their corresponding scores (e.g., probabilities, logits, or binary indicators).
 
-1. Create a new class that inherits from `nn.Module`
-2. Implement `__init__()` and `forward()` methods
-3. Ensure the forward method returns logits for classifier models or provides a prediction interface for zero-shot models
-
-Example:
-
+Example for a new VLM in `src/models/vlm/custom_vlm_model.py`:
 ```python
-class CustomVLMModel(nn.Module):
-    def __init__(self, model_name, mode="fine-tune", freeze_backbone=True):
-        super().__init__()
-        # Initialize your model components
-        
-    def forward(self, images):
-        # Process images and return logits
-        return logits
+# In src/models/vlm/custom_vlm_model.py
+from PIL import Image
+from typing import List, Dict, Any
+# from transformers import AutoModel, AutoProcessor # Example imports
+from .base_vlm import BaseVLM
+
+class CustomVLMModelWrapper(BaseVLM):
+    def _load_model(self):
+        model_id = self.config.get("model_id", "some-default-custom-vlm")
+        # self.processor = AutoProcessor.from_pretrained(model_id)
+        # self.model = AutoModel.from_pretrained(model_id)
+        # if torch.cuda.is_available():
+        #     self.model.to("cuda")
+        # self.model.eval()
+        print(f"CustomVLM {self.model_name} loaded with id {model_id}") # Placeholder
+        pass # Replace with actual loading logic
+
+    def predict(self, image: Image.Image, text_prompts: List[str]) -> Dict[str, float]:
+        # inputs = self.processor(text=text_prompts, images=image, return_tensors="pt", padding=True)
+        # if torch.cuda.is_available():
+        #     inputs = {k: v.to("cuda") for k, v in inputs.items()}
+        # with torch.no_grad():
+        #     outputs = self.model(**inputs) # This depends on the model type
+        # Implement logic to derive scores for each prompt
+        print(f"CustomVLM {self.model_name} predicting for image and prompts: {text_prompts}") # Placeholder
+        results = {prompt: 0.5 for prompt in text_prompts} # Placeholder
+        return results
 ```
 
 ## Model Requirements

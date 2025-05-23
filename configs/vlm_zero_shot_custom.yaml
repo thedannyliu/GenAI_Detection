@@ -1,0 +1,90 @@
+# Configuration for Zero-Shot VLM Evaluation
+
+# GPU for evaluation (e.g., 0, 1, 2, 3). Set to null or remove for default/CPU.
+eval_gpu_id: 3 
+random_seed: 42 # Seed for random number generators to ensure reproducibility
+
+batch_size: 1 # VLMs typically process one image at a time for zero-shot with PIL inputs
+num_workers: 2
+
+# output_dir_base will be used to create model-specific subdirectories
+# e.g., results/zero_shot_eval/stable_diffusion_v1_4_test/CLIP-L-14/
+output_dir_base: "results/zero_shot_eval/stable_diffusion_v1_4_test"
+
+# Dataset Configuration
+dataset:
+  # root_dir should point to the specific dataset folder containing train/val splits
+  # Using imagenet_ai_0419_sdv4 for stable_diffusion_v1_4 based on previous check
+  root_dir: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0419_sdv4/"
+  eval_split: "val" # or "test" if available. GenImageDataset expects "train" or "val"
+  num_samples_eval: 30 # Number of samples to randomly evaluate from the dataset. Set to null or remove to use all.
+  class_to_idx: # Should match the dataset's structure and desired labels
+    nature: 0 # Real image
+    ai: 1     # AI-generated image
+
+# VLM and Prompt Strategy Configuration
+vlm:
+  # List of Model Configurations to run sequentially
+  model_configs:
+    - name: "CLIP-L-14-OpenAI" # Unique name for this run, used for subdir
+      model_config: # Configuration for the VLM wrapper itself
+        module: "src.models.vlm.clip_model" 
+        class: "CLIPModelWrapper"         
+        params:
+          model_name: "CLIP-L-14" # Internal model name for logging
+          config: 
+            model_id: "openai/clip-vit-large-patch14"
+    
+    - name: "BLIP-ITM-Large-Salesforce"
+      model_config:
+        module: "src.models.vlm.blip_model"
+        class: "BlipModelWrapper"
+        params:
+          model_name: "BLIP-ITM-L"
+          config:
+            model_id: "Salesforce/blip-itm-large-eval"
+            task: "image-text-matching"
+
+    # - name: "InstructBLIP-Vicuna-7B"
+    #   model_config:
+    #     module: "src.models.vlm.instruct_blip_model"
+    #     class: "InstructBlipModelWrapper"
+    #     params:
+    #       model_name: "InstructBLIP-Vicuna-7B"
+    #       config:
+    #         model_id: "Salesforce/instructblip-vicuna-7b"
+    #         max_new_tokens: 50
+
+    # - name: "LLaVA-1.5-7B-HF"
+    #   model_config:
+    #     module: "src.models.vlm.llava_model"
+    #     class: "LlavaModelWrapper"
+    #     params:
+    #       model_name: "LLaVA-1.5-7B"
+    #       config:
+    #         model_id: "llava-hf/llava-1.5-7b-hf"
+    #         max_new_tokens: 70
+
+  # Prompt Strategy Configuration (shared across models, or could be part of each model_config entry if varied)
+  prompt_config:
+    module: "src.prompts.generic_prompts"
+    class: "GenImageDetectPrompts" 
+    params: 
+      prompt_to_class_map: 
+        "a real photograph": 0
+        "an authentic image": 0
+        "a natural image": 0
+        "an AI-generated image": 1
+        "a computer-generated artwork": 1
+        "a synthetic image": 1
+      keyword_to_class_map: 
+        "real photograph": 0
+        "authentic image": 0
+        "natural image": 0
+        "ai-generated image": 1
+        "computer-generated": 1 
+        "synthetic image": 1
+
+# Tie-breaking and default labels for generative VLM predictions
+tie_breaking_label_for_generative: 1 
+default_label_for_generative_no_match: 1 

@@ -1,0 +1,72 @@
+# Prompt Strategies Module
+
+This directory (`src/prompts/`) defines strategies for generating text prompts to be used with Vision-Language Models (VLMs) for tasks like zero-shot image classification (e.g., distinguishing real vs. AI-generated images).
+
+## Core Concepts
+
+- **`BasePromptStrategy`**: An abstract base class (`base_prompt_strategy.BasePromptStrategy`) that all specific prompt strategies should inherit from. It defines a common interface:
+    - `get_prompts(class_names: List[str] = None, image_info: Dict[str, Any] = None) -> List[str]`: 
+        Generates a list of text prompts. These are typically used by models like CLIP or BLIP (in Image-Text Matching mode) for similarity scoring against an image.
+    - `get_vlm_question() -> str`:
+        Returns a specific question string. This is intended for use with generative VLMs (e.g., InstructBLIP, LLaVA), which are prompted with an image and a question.
+    - `get_keywords_for_response_check() -> List[str]`:
+        Provides a list of keywords. For generative VLMs, the model's textual response to the question is checked for the presence of these keywords to make a classification decision.
+
+- **Configuration**: Prompt strategies can be configured via a dictionary passed to their constructor, allowing for customization of prompts, questions, and keywords without code changes.
+
+## Available Strategies
+
+- **`generic_prompts.GenImageDetectPrompts`**: 
+    A strategy specifically designed for the GenImage real vs. AI detection task. It provides:
+    - A default set of discriminative prompts (e.g., "a real photograph", "an AI-generated image").
+    - A default question for generative models ("Is this image a real photograph or an AI-generated image?...").
+    - A default list of keywords (e.g., "real photograph", "ai-generated image") to check in responses.
+    These can be overridden via configuration.
+
+- **`generic_prompts.SimpleBinaryPrompts`**: 
+    A simpler strategy that can take two class names (e.g., "real", "fake") and construct basic prompts around them. Useful for quick setup of binary classification tasks.
+
+## How to Use
+
+1.  **Instantiate a strategy**: Choose a strategy and initialize it, optionally passing a configuration dictionary.
+    ```python
+    from src.prompts.generic_prompts import GenImageDetectPrompts
+
+    prompt_config = {
+        "discriminative_prompts": ["this is a genuine photo", "this is a computer artifact"],
+        "generative_question": "Tell me about the origin of this visual data.",
+        "generative_response_keywords": ["genuine photo", "computer artifact"]
+    }
+    prompt_strategy = GenImageDetectPrompts(config=prompt_config)
+    ```
+
+2.  **Get prompts/questions for your VLM**:
+
+    *For CLIP-like models:*
+    ```python
+    prompts_for_clip = prompt_strategy.get_prompts(class_names=["real", "ai"])
+    # -> e.g., ["a real photograph", "an AI-generated image"]
+    # (or from config if provided)
+    ```
+
+    *For LLaVA/InstructBLIP-like models:*
+    ```python
+    question_for_llava = prompt_strategy.get_vlm_question()
+    # -> "Tell me about the origin of this visual data."
+    
+    keywords = prompt_strategy.get_keywords_for_response_check()
+    # -> ["genuine photo", "computer artifact"]
+    
+    # Then, in your VLP wrapper:
+    # llava_vlm.config["llava_question"] = question_for_llava # (or pass directly)
+    # llava_vlm.config["llava_prompt_template"] = "USER: <image>\n{} ASSISTANT:"
+    # response = llava_vlm.predict(image, keywords_to_check_against=keywords)
+    ```
+    Note: The `predict` method of the generative VLM wrappers (`InstructBlipModelWrapper`, `LlavaModelWrapper`) already expects `text_prompts` to be the keywords to check for. The question they use can be set via their own `config` (e.g., `config["llava_question"]`). So, the prompt strategy's `get_vlm_question()` output would be fed into the VLM wrapper's configuration, and `get_keywords_for_response_check()` would be passed as the `text_prompts` argument to `predict()`.
+
+## Adding New Strategies
+
+1.  Create a new Python file in `src/prompts/` (e.g., `my_custom_prompts.py`).
+2.  Define a class that inherits from `BasePromptStrategy`.
+3.  Implement the `get_prompts`, `get_vlm_question`, and `get_keywords_for_response_check` methods according to your new strategy's logic.
+4.  Consider making your strategy configurable through the `self.config` dictionary. 
