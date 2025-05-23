@@ -45,15 +45,15 @@ vlm:
             model_id: "Salesforce/blip-itm-large-eval"
             task: "image-text-matching"
 
-    # - name: "InstructBLIP-Vicuna-7B"
-    #   model_config:
-    #     module: "src.models.vlm.instruct_blip_model"
-    #     class: "InstructBlipModelWrapper"
-    #     params:
-    #       model_name: "InstructBLIP-Vicuna-7B"
-    #       config:
-    #         model_id: "Salesforce/instructblip-vicuna-7b"
-    #         max_new_tokens: 50
+    - name: "InstructBLIP-Vicuna-7B"
+      model_config:
+        module: "src.models.vlm.instruct_blip_model"
+        class: "InstructBlipModelWrapper"
+        params:
+          model_name: "InstructBLIP-Vicuna-7B"
+          config:
+            model_id: "Salesforce/instructblip-vicuna-7b"
+            max_new_tokens: 50
 
     # - name: "LLaVA-1.5-7B-HF"
     #   model_config:
@@ -70,20 +70,23 @@ vlm:
     module: "src.prompts.generic_prompts"
     class: "GenImageDetectPrompts" 
     params: 
-      prompt_to_class_map: 
-        "a real photograph": 0
-        "an authentic image": 0
-        "a natural image": 0
-        "an AI-generated image": 1
-        "a computer-generated artwork": 1
-        "a synthetic image": 1
-      keyword_to_class_map: 
-        "real photograph": 0
-        "authentic image": 0
-        "natural image": 0
-        "ai-generated image": 1
-        "computer-generated": 1 
-        "synthetic image": 1
+      config: # Parameters for GenImageDetectPrompts are nested under 'config'
+        prompt_to_class_map: 
+          "a real photograph": 0
+          "an authentic image": 0
+          "a natural image": 0
+          "a natural image from a camera": 0
+          "an AI-generated image": 1
+          "a computer-generated artwork": 1
+          "a synthetic image": 1
+          "a synthetic picture": 1
+        keyword_to_class_map: 
+          "real photograph": 0
+          "authentic image": 0
+          "natural image": 0
+          "ai-generated image": 1
+          "computer-generated": 1 
+          "synthetic image": 1
 
 # Tie-breaking and default labels for generative VLM predictions
 tie_breaking_label_for_generative: 1 

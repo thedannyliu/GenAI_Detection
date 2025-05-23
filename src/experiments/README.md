@@ -62,4 +62,42 @@ Refer to the specific script's documentation or command-line help for instructio
 
 ## Output
 
-Experiment outputs, such as trained model checkpoints, evaluation metrics, logs, and visualizations, are generally saved to the `results/` directory, often in subdirectories named after the experiment or configuration. 
+Experiment outputs, such as trained model checkpoints, evaluation metrics, logs, and visualizations, are generally saved to the `results/` directory, often in subdirectories named after the experiment or configuration.
+
+### Zero-Shot VLM DataLoader and Collate Function
+
+For zero-shot VLM evaluation, the DataLoader uses a custom `collate_fn` (called `vlm_collate_fn`) to support batching of `PIL.Image.Image` objects, which are required by VLM wrappers. The `VLMGenImageDataset` returns a tuple `(PIL.Image.Image, label)`, and the collate function ensures that labels are batched as tensors while images remain as a list of PIL Images.
+
+**Example:**
+```python
+from torch.utils.data import DataLoader
+
+def vlm_collate_fn(batch):
+    images = [item[0] for item in batch]
+    labels = [item[1] for item in batch]
+    labels_tensor = torch.tensor(labels, dtype=torch.long)
+    return images, labels_tensor
+
+loader = DataLoader(dataset, batch_size=1, collate_fn=vlm_collate_fn)
+```
+
+**Troubleshooting:**
+If you see an error like `TypeError: default_collate: batch must contain tensors, numpy arrays, numbers, dicts or lists; found <class 'PIL.Image.Image'>`, make sure you are using the custom `collate_fn` as shown above.
+
+### Prompt-to-Class Mapping Completeness
+
+If your prompt strategy (e.g., `GenImageDetectPrompts`) generates prompts dynamically, ensure that every possible prompt is included in your `prompt_to_class_map` in the config YAML. For example:
+
+```yaml
+prompt_to_class_map:
+  "a real photograph": 0
+  "an authentic image": 0
+  "a natural image": 0
+  "a natural image from a camera": 0
+  "an AI-generated image": 1
+  "a computer-generated artwork": 1
+  "a synthetic image": 1
+  "a synthetic picture": 1
+```
+
+If you see warnings about prompts not being found in the map, update your config accordingly. 

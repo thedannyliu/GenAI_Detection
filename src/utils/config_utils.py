@@ -69,7 +69,12 @@ def get_instance_from_config(config: Dict[str, Any], **kwargs) -> Any:
     constructor_params = config.get('params', {})
     
     # Merge config params with kwargs, kwargs take precedence
-    constructor_params.update(kwargs)
+    # constructor_params already contains config.get('params', {})
+    # kwargs are additional arguments passed to get_instance_from_config
+    # The final set of parameters to be passed to Klass constructor should be a merge of these.
+    
+    final_constructor_args = constructor_params.copy() # Start with params from the config file
+    final_constructor_args.update(kwargs) # Override/add with any kwargs passed directly to get_instance_from_config
 
     Klass = dynamic_import(module_path, class_name)
-    return Klass(**constructor_params) 
+    return Klass(**final_constructor_args) 

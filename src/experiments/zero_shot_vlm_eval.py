@@ -10,6 +10,9 @@ from datetime import datetime
 import random # Added for seed setting
 import shutil # Added for copying config
 
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 # Adjust import paths based on your project structure
 from src.utils.config_utils import load_yaml_config, get_instance_from_config
 from src.data_processing.custom_dataset import GenImageDataset # Assuming GenImageDataset is suitable
@@ -17,6 +20,15 @@ from src.data_processing.custom_dataset import GenImageDataset # Assuming GenIma
 # Define labels for clarity, these should match your dataset's class_to_idx or be configurable
 LABEL_REAL = 0  # Typically 'nature'
 LABEL_AI = 1    # Typically 'ai'
+
+def vlm_collate_fn(batch):
+    # batch is a list of tuples, where each tuple is (PIL.Image, label)
+    images = [item[0] for item in batch]
+    labels = [item[1] for item in batch]
+    labels_tensor = torch.tensor(labels, dtype=torch.long)
+    # For batch_size=1 (common for VLMs in this script), 'images' will be a list containing a single PIL Image.
+    # The evaluation loop is set up to take images[i], which works fine.
+    return images, labels_tensor
 
 def set_seed(seed_value):
     """Sets the seed for reproducibility."""
@@ -82,11 +94,15 @@ def run_evaluation_for_model(model_run_config, global_cfg, prompt_strategy, eval
     print(f"VLM Model {vlm.get_model_name()} loaded for run {model_run_name}.")
     # Ensure VLM's internal model is on the correct device (our wrappers should handle this).
 
+    batch_size = global_cfg.get('batch_size', 1)
+    num_workers = global_cfg.get('num_workers', 2)
     eval_loader = DataLoader(
         eval_dataset_for_loader,
-        batch_size=global_cfg.get('batch_size', 1),
-        shuffle=False, # Already handled by subset sampling if used
-        num_workers=global_cfg.get('num_workers', 2)
+        batch_size=batch_size, # From config
+        shuffle=False, # Usually false for evaluation
+        num_workers=num_workers, # From config
+        pin_memory=True, # If using GPU, can speed up host-to-device transfers
+        collate_fn=vlm_collate_fn # Use the custom collate function
     )
     print(f"DataLoader ready for {model_run_name} with {len(eval_dataset_for_loader)} samples.")
 
@@ -332,12 +348,23 @@ def run_zero_shot_evaluation(config_path: str):
     # Hacky way to ensure PIL images if GenImageDataset doesn't support it directly:
     # Wrap dataset or modify its __getitem__ logic for this script
     class VLMGenImageDataset(GenImageDataset):
+        # __init__ can be inherited from GenImageDataset if no special init logic is needed for VLMGenImageDataset itself.
+        # The GenImageDataset is initialized with transform=None by the calling code for this VLM path.
         def __getitem__(self, idx):
-            img_path = self.image_paths[idx]
-            label = self.labels[idx]
-            image = Image.open(img_path).convert('RGB') # Load as PIL, ensure RGB
-            # The VLM's processor will do the rest of the transformations
-            return image, label
+            img_path = self.image_paths[idx] # Populated by GenImageDataset's __init__
+            label = self.labels[idx]         # Populated by GenImageDataset's __init__
+            
+            try:
+                image_pil = Image.open(img_path).convert('RGB')
+            except Exception as e:
+                print(f"Error loading image {img_path} in VLMGenImageDataset: {e}.")
+                # Propagate the error so DataLoader can handle it (e.g., skip if num_workers > 0 and it doesn't crash the worker)
+                # Or raise a more specific error / return a placeholder if the main loop is robust to it.
+                raise RuntimeError(f"Failed to load image {img_path}: {e}")
+            
+            # Return PIL image and label, as VLM wrappers expect PIL images.
+            # Collate function will handle batching these.
+            return image_pil, label
 
     full_eval_dataset = VLMGenImageDataset( # Changed variable name here
         root_dir=dataset_root,
