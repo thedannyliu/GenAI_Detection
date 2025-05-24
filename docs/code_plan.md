@@ -51,7 +51,11 @@ src/
 ## 3. Training Module (`src/training/`)
 
 ### Core Components
-- **Trainer**: Orchestrates the training loop
+- **Trainer**: Orchestrates the training loop (primarily for VLMs in existing structure, e.g., using Hugging Face Trainer in `vlm_finetune_and_infer.py`)
+- **train_cnn.py**: A dedicated script (`src/training/train_cnn.py`) for training standard CNN classifiers (e.g., ResNet50). It includes:
+    - Standard PyTorch training and validation loops.
+    - Data loading using `GenImageDataset` with sampling.
+    - Model saving and basic metric logging.
 - **Loss functions**: Binary cross-entropy or alternatives
 - **Optimization**: AdamW with appropriate learning rates
 
@@ -103,16 +107,19 @@ src/
 
 ## Main Execution Flow
 
-The project execution is controlled by the `main.py` script which:
+The project execution is controlled by different scripts depending on the task:
 
-1. Parses configuration from files or command line arguments
-2. Sets up the environment (seeds, logging, devices)
-3. Initializes the appropriate dataset
-4. Creates the model based on configuration
-5. Either:
-   - Runs the training loop if in training mode
-   - Evaluates a checkpoint if in evaluation mode
-   - Performs specialized analysis (e.g., Grad-CAM) if requested
+- **VLM Fine-tuning and Inference**: Primarily via `src/experiments/vlm_finetune_and_infer.py` or potentially a `src/main.py` if it acts as a general entry point using YAML configs.
+- **CNN Model Training**: Via `src/training/train_cnn.py`, which is a self-contained script for training CNNs like ResNet50 on the GenImage dataset.
+
+General flow for `train_cnn.py`:
+1. Parses command-line arguments for configuration (dataset paths, hyperparameters, etc.).
+2. Sets up the environment (seeds, logging, devices).
+3. Initializes `GenImageDataset` for train, validation, and test splits, handling specific sampling requirements.
+4. Creates the CNN model (e.g., `ResNet50Classifier`) from `src/models/baseline_classifiers.py`.
+5. Runs the training loop: iterating through epochs, training on batches, and validating.
+6. Saves the best performing model based on validation accuracy.
+7. Evaluates the best model on the test set and reports metrics.
 
 ## Configuration System
 
@@ -121,7 +128,7 @@ Configurations are stored as YAML files in the `configs/` directory:
 - **default.yaml**: Base configuration with shared parameters
 - **vlm_zero_shot.yaml**: Settings for zero-shot evaluation
 - **vlm_fine_tune.yaml**: Settings for VLM fine-tuning
-- **cnn_baseline.yaml**: Settings for baseline CNN training
+- **cnn_baseline.yaml**: Settings for baseline CNN training (Note: `train_cnn.py` currently uses argparse for configuration, but could be adapted to use YAML if needed for consistency).
 
 Parameters include:
 - Dataset paths and organization

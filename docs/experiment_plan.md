@@ -17,7 +17,7 @@ Our approach consists of several stages and strategies to comprehensively evalua
 
 We begin with baseline detectors for reference:
 
-* **Standard CNN Baseline:** Train a convolutional neural network (e.g. ResNet-50) from scratch or fine-tuned from ImageNet weights on the genimage dataset.
+* **Standard CNN Baseline:** Train a convolutional neural network (e.g. ResNet-50, using the script `src/training/train_cnn.py`) from scratch or fine-tuned from ImageNet weights on the genimage dataset. The dataset will be sampled as per the specific requirements (10k train, 1k val, 1k test, 1:1 class balance from specified data paths).
 * **Zero-Shot VLM Baselines:** Evaluate models like CLIP, BLIP, GIT, and Flamingo in a zero-shot manner (no training on genimage).
 * **Implementation Details:** We'll use public APIs or implementations (e.g., Hugging Face Transformers) and evaluate based on accuracy, ROC-AUC, and other metrics.
 
