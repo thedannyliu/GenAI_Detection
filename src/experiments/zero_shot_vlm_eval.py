@@ -1,5 +1,6 @@
 import argparse
 import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false" # Disable tokenizer parallelism to avoid deadlocks with DataLoader workers
 import torch
 from PIL import Image
 from torch.utils.data import DataLoader
@@ -9,6 +10,8 @@ import json
 from datetime import datetime
 import random # Added for seed setting
 import shutil # Added for copying config
+from sklearn.model_selection import train_test_split
+from typing import Dict
 
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -20,6 +23,26 @@ from src.data_processing.custom_dataset import GenImageDataset # Assuming GenIma
 # Define labels for clarity, these should match your dataset's class_to_idx or be configurable
 LABEL_REAL = 0  # Typically 'nature'
 LABEL_AI = 1    # Typically 'ai'
+
+# --- Define VLMGenImageDataset at the top level ---
+class VLMGenImageDataset(GenImageDataset):
+    # This dataset wrapper ensures that __getitem__ returns a PIL Image and its label,
+    # which is expected by the VLM evaluation loop.
+    # It inherits __init__ from GenImageDataset.
+    # When used, it should be initialized with transform=None or a transform that
+    # does not convert to PyTorch tensor, as VLM processors handle that.
+    def __getitem__(self, idx):
+        img_path = self.image_paths[idx]
+        label = self.labels[idx]
+        try:
+            image_pil = Image.open(img_path).convert('RGB')
+        except Exception as e:
+            print(f"Error loading image {img_path} in VLMGenImageDataset: {e}.")
+            # Depending on DataLoader behavior (e.g. num_workers > 0), errors here might be suppressed
+            # or could halt execution. Raising RuntimeError ensures it's noticeable.
+            raise RuntimeError(f"Failed to load image {img_path}: {e}")
+        return image_pil, label
+# --- End of VLMGenImageDataset definition ---
 
 def vlm_collate_fn(batch):
     # batch is a list of tuples, where each tuple is (PIL.Image, label)
@@ -40,216 +63,342 @@ def set_seed(seed_value):
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
-def evaluate_predictions(all_predictions, all_labels, class_names_for_eval):
-    """
-    Calculates accuracy and other metrics.
-    Args:
-        all_predictions (list): List of predicted labels (0 or 1).
-        all_labels (list): List of true labels (0 or 1).
-        class_names_for_eval (list): List of class names, e.g., ['nature', 'ai']
-    Returns:
-        dict: Dictionary containing evaluation metrics.
-    """
-    if not all_predictions or not all_labels:
-        return {"error": "No predictions or labels to evaluate."}
-    if len(all_predictions) != len(all_labels):
-        return {"error": "Mismatch in number of predictions and labels."}
+def evaluate_predictions(all_predictions, all_labels, model_name_unique, prompt_strategy, global_cfg_dict, model_specific_output_dir, all_prompt_score_outputs):
+    # The signature of evaluate_predictions was changed in a previous step and seems to have been reverted partially in the latest file content.
+    # Let's use the one that takes model_name_unique, prompt_strategy etc.
+    # Also, `class_names_for_eval` is needed for classification_report target_names.
+    # This needs to be passed or retrieved from global_cfg_dict and dataset_cfg_dict.
+    
+    dataset_cfg_dict = global_cfg_dict['dataset'] # Assuming dataset config is here
+    class_to_idx = dataset_cfg_dict.get('class_to_idx', {'nature': LABEL_REAL, 'ai': LABEL_AI})
+    idx_to_class = {v: k for k, v in class_to_idx.items()}
+    # Ensure class_names_for_eval are in the correct order [REAL, AI]
+    class_names_for_eval = [idx_to_class.get(LABEL_REAL, "real"), idx_to_class.get(LABEL_AI, "ai")]
 
-    predictions_arr = np.array(all_predictions)
-    labels_arr = np.array(all_labels)
+    if not all_predictions or not all_labels:
+        print(f"No predictions/labels for {model_name_unique}. Skipping metrics.")
+        # Create a minimal metrics dict indicating failure/skip
+        metrics = {"accuracy": 0, "num_samples": 0, "error": "No predictions or labels available."}
+    elif len(all_predictions) != len(all_labels):
+        print(f"Mismatch in predictions/labels count for {model_name_unique}. Skipping metrics.")
+        metrics = {"accuracy": 0, "num_samples": 0, "error": "Mismatch in prediction/label count."}
+    else:
+        predictions_arr = np.array(all_predictions)
+        labels_arr = np.array(all_labels)
+
+        # print(f"Debug - Model: {model_name_unique}")
+        # print(f"Debug: Unique predicted labels in evaluate_predictions: {np.unique(predictions_arr, return_counts=True)}")
+        # print(f"Debug: True labels in evaluate_predictions ({len(labels_arr)} total): {np.unique(labels_arr, return_counts=True)}")
 
     accuracy = np.mean(predictions_arr == labels_arr)
-    
     metrics = {"accuracy": accuracy, "num_samples": len(labels_arr)}
-
     try:
         from sklearn.metrics import classification_report
         report = classification_report(labels_arr, predictions_arr, target_names=class_names_for_eval, output_dict=True, zero_division=0)
         metrics["classification_report"] = report
-        metrics["precision_real"] = report[class_names_for_eval[LABEL_REAL]]["precision"]
-        metrics["recall_real"] = report[class_names_for_eval[LABEL_REAL]]["recall"]
-        metrics["f1_real"] = report[class_names_for_eval[LABEL_REAL]]["f1-score"]
-        metrics["precision_ai"] = report[class_names_for_eval[LABEL_AI]]["precision"]
-        metrics["recall_ai"] = report[class_names_for_eval[LABEL_AI]]["recall"]
-        metrics["f1_ai"] = report[class_names_for_eval[LABEL_AI]]["f1-score"]
+        # Ensure class_names_for_eval[LABEL_REAL] and class_names_for_eval[LABEL_AI] correctly access the report keys
+        if class_names_for_eval[LABEL_REAL] in report and class_names_for_eval[LABEL_AI] in report:
+            metrics["precision_real"] = report[class_names_for_eval[LABEL_REAL]].get("precision", 0)
+            metrics["recall_real"] = report[class_names_for_eval[LABEL_REAL]].get("recall", 0)
+            metrics["f1_real"] = report[class_names_for_eval[LABEL_REAL]].get("f1-score", 0)
+            metrics["precision_ai"] = report[class_names_for_eval[LABEL_AI]].get("precision", 0)
+            metrics["recall_ai"] = report[class_names_for_eval[LABEL_AI]].get("recall", 0)
+            metrics["f1_ai"] = report[class_names_for_eval[LABEL_AI]].get("f1-score", 0)
+        else:
+            print(f"Warning: Class names for report ({class_names_for_eval[LABEL_REAL]}, {class_names_for_eval[LABEL_AI]}) not found in classification_report keys: {list(report.keys())}")
     except ImportError:
         print("scikit-learn not installed. Skipping classification report.")
     except Exception as e:
-        print(f"Error generating classification report: {e}")
-
-    return metrics
-
-def run_evaluation_for_model(model_run_config, global_cfg, prompt_strategy, eval_dataset_for_loader, device, class_names_for_eval, idx_to_class):
-    """
-    Runs the evaluation loop for a single VLM configuration.
-    """
-    vlm_wrapper_config = model_run_config['model_config']
-    model_run_name = model_run_config.get('name', vlm_wrapper_config.get('params', {}).get('model_name', 'unknown_model'))
+        print(f"Error generating classification report for {model_name_unique}: {e}")
     
-    print(f"\n--- Starting evaluation for model: {model_run_name} ---")
+    # Save metrics
+    metrics_filename = os.path.join(model_specific_output_dir, f"metrics_{model_name_unique}.json")
+    with open(metrics_filename, 'w') as f:
+        json.dump(metrics, f, indent=4)
+    print(f"Metrics for {model_name_unique} saved to {metrics_filename}")
 
-    # 1. Initialize VLM Model
-    print(f"Initializing VLM model: {model_run_name}...")
-    vlm = get_instance_from_config(vlm_wrapper_config)
-    print(f"VLM Model {vlm.get_model_name()} loaded for run {model_run_name}.")
-    # Ensure VLM's internal model is on the correct device (our wrappers should handle this).
+    # Save raw predictions and scores
+    raw_output_filename = os.path.join(model_specific_output_dir, f"predictions_and_scores_{model_name_unique}.json")
+    with open(raw_output_filename, 'w') as f:
+        json.dump(all_prompt_score_outputs, f, indent=4)
+    print(f"Raw predictions and scores for {model_name_unique} saved to {raw_output_filename}")
+    return metrics # Or whatever this function is supposed to return
 
-    batch_size = global_cfg.get('batch_size', 1)
-    num_workers = global_cfg.get('num_workers', 2)
-    eval_loader = DataLoader(
-        eval_dataset_for_loader,
-        batch_size=batch_size, # From config
-        shuffle=False, # Usually false for evaluation
-        num_workers=num_workers, # From config
-        pin_memory=True, # If using GPU, can speed up host-to-device transfers
-        collate_fn=vlm_collate_fn # Use the custom collate function
-    )
-    print(f"DataLoader ready for {model_run_name} with {len(eval_dataset_for_loader)} samples.")
+def setup_output_directory(output_dir_base: str, model_name_unique: str, dataset_identifier: str) -> str:
+    # Sanitize dataset_identifier to be a valid path component
+    sanitized_dataset_id = dataset_identifier.replace('/', '_').replace('\\', '_') # Basic sanitization
+    # Truncate if too long
+    max_len_dataset_id = 50
+    if len(sanitized_dataset_id) > max_len_dataset_id:
+        sanitized_dataset_id = sanitized_dataset_id[:max_len_dataset_id]
+        
+    model_specific_output_dir = os.path.join(output_dir_base, sanitized_dataset_id, model_name_unique)
+    os.makedirs(model_specific_output_dir, exist_ok=True)
+    print(f"Output directory for {model_name_unique} on {sanitized_dataset_id}: {model_specific_output_dir}")
+    return model_specific_output_dir
 
-    # 2. Run Evaluation Loop
+def run_evaluation_for_model(model_name_unique: str, model_config_dict: Dict, prompt_strategy_config_dict: Dict, dataset_cfg_dict: Dict, global_cfg_dict: Dict):
+    print(f"\nStarting evaluation for model: {model_name_unique}")
+    device = f"cuda:{global_cfg_dict['eval_gpu_id']}" if global_cfg_dict.get('eval_gpu_id') is not None and torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}")
+
+    # 1. Setup Model
+    print("Initializing model (without passing device to constructor initially)...")
+    model = get_instance_from_config(model_config_dict) # Always instantiate without device first
+    
+    # Then, move to the target device if necessary
+    if hasattr(model, 'to') and callable(model.to):
+        current_model_device_type = "unknown"
+        if hasattr(model, 'device') and isinstance(model.device, torch.device):
+             current_model_device_type = model.device.type
+
+        # device is a string like "cuda:0" or "cpu". We need torch.device(device).type for comparison.
+        target_device_obj = torch.device(device)
+        if current_model_device_type != target_device_obj.type:
+            try:
+                print(f"Moving model to device {device} after instantiation.")
+                model.to(device)
+            except Exception as e_move:
+                print(f"Error moving model to device {device}: {e_move}. Model might remain on {current_model_device_type}.")
+        else:
+            print(f"Model already on target device {device} ({current_model_device_type}) or handles device internally.")
+    else:
+        print(f"Warning: Model does not have a 'to' method. Device placement ({device}) might not be applied.")
+    
+    print(f"Model {model_name_unique} initialized.")
+
+    # 2. Setup Prompt Strategy
+    print("Initializing prompt strategy...")
+    prompt_strategy = get_instance_from_config(prompt_strategy_config_dict)
+    model.prompt_strategy = prompt_strategy # Assign prompt_strategy to the model instance
+    print("Prompt strategy initialized.")
+
+    # 3. Setup Dataset and DataLoader
+    # `eval_split` is defined in the dataset_cfg_dict from YAML
+    eval_split = dataset_cfg_dict.get('eval_split', 'val') 
+    print(f"Setting up dataset and loader for split: {eval_split}...")
+    eval_dataset, eval_loader = setup_dataset_and_loader(dataset_cfg_dict, global_cfg_dict, split=eval_split)
+
+    if eval_dataset is None or eval_loader is None:
+        print(f"Error: Could not setup dataset/loader for {model_name_unique} on split '{eval_split}'. Skipping evaluation.")
+        return
+    print(f"Dataset and DataLoader for '{eval_split}' ready.")
+
     all_predictions = []
-    all_labels = []
-    raw_results = [] 
+    all_true_labels = []
+    all_prompt_score_outputs = [] # To store detailed scores for each sample
 
-    is_generative_vlm = vlm.model_name.lower() in ["llava", "instructblip"] 
-    
-    prompts_for_vlm = prompt_strategy.get_prompts(class_names=class_names_for_eval)
-    keywords_for_vlm = prompt_strategy.get_keywords_for_response_check()
-    
-    if is_generative_vlm:
-        generative_question = prompt_strategy.get_vlm_question()
-        if generative_question: 
-            if hasattr(vlm, 'config') and isinstance(vlm.config, dict):
-                question_key = f"{vlm.model_name.lower()}_question" 
-                vlm.config[question_key] = generative_question
-                print(f"Using question from prompt strategy for {vlm.model_name}: '{generative_question}'")
-            else:
-                print(f"Warning: Could not set question for {vlm.model_name} from prompt strategy.")
+    # Generate prompts once if they are static for all images (e.g., discriminative)
+    # For generative prompts from GenImageDetectPrompts, this is more dynamic / per image, handled inside loop if needed.
+    # Here, we assume get_prompts_for_image(None) gives the general set for discriminative VLMs.
+    current_prompts = prompt_strategy.get_prompts_for_image(image=None) 
+    if current_prompts is None:
+        print(f"Warning: Prompt strategy for {model_name_unique} returned None for prompts. Using an empty list.")
+        current_prompts = []
+    elif not isinstance(current_prompts, list):
+        print(f"Warning: Prompt strategy for {model_name_unique} returned a non-list ({type(current_prompts)}) for prompts. Using an empty list.")
+        current_prompts = []
+    print(f"Using prompts: {current_prompts}")
 
-    print(f"Starting evaluation loop for {model_run_name} on {len(eval_loader)} batches...")
-    for batch_idx, (images, labels) in enumerate(tqdm(eval_loader, desc=f"Evaluating {model_run_name}")):
-        for i in range(len(images)): 
-            image = images[i] 
-            true_label = labels[i].item()
+    # model.eval() # Set model to evaluation mode
+    # Attempt to set the underlying model to evaluation mode
+    try:
+        if hasattr(model, 'model') and hasattr(model.model, 'eval') and callable(model.model.eval):
+            print(f"Calling model.model.eval() for {model_name_unique}")
+            model.model.eval()
+        elif hasattr(model, 'eval') and callable(model.eval): # Fallback if wrapper itself has eval
+            print(f"Calling model.eval() for {model_name_unique}")
+            model.eval()
+        else:
+            print(f"Warning: {model_name_unique} and its underlying model do not have a standard eval method. Skipping.")
+    except Exception as e_eval:
+        print(f"Exception while trying to set {model_name_unique} to eval mode: {e_eval}. Continuing...")
+
+    with torch.no_grad():
+        for i, batch_data in tqdm(enumerate(eval_loader), total=len(eval_loader), desc=f"Evaluating {model_name_unique} on '{eval_split}' split"):
+            batch_images_pil, batch_labels_tensor = batch_data
             
-            current_sample_index_in_dataloader = batch_idx * eval_loader.batch_size + i
-            
-            underlying_dataset = eval_loader.dataset
-            if isinstance(underlying_dataset, torch.utils.data.Subset):
-                original_dataset_index = underlying_dataset.indices[current_sample_index_in_dataloader]
-                image_path = underlying_dataset.dataset.image_paths[original_dataset_index]
-            else: 
-                image_path = underlying_dataset.image_paths[current_sample_index_in_dataloader]
+            # Assuming batch_size=1 from config for VLMs, so batch_images_pil is a list with one PIL image
+            if not batch_images_pil:
+                print(f"Warning: Empty image list in batch {i}. Skipping.")
+                continue
+            current_image_pil = batch_images_pil[0]
+            current_label_int = batch_labels_tensor[0].item()
 
-            sample_result = {"image_path": image_path, "true_label": true_label, "true_class": idx_to_class[true_label]}
+            try:
+                # VLM's predict_batch should return List[Dict[str, float]]
+                # For bsize=1, it's List with 1 Dict: [{prompt: score, ...}]
+                prompt_scores_list = model.predict_batch([current_image_pil], current_prompts) 
 
-            prompt_strategy_config = global_cfg['vlm']['prompt_config'] # Moved here for access
-
-            if is_generative_vlm:
-                raw_prediction_scores = vlm.predict(image, keywords_for_vlm)
-                sample_result["raw_scores"] = raw_prediction_scores
-                
-                keyword_to_class_map = prompt_strategy_config.get('params', {}).get('keyword_to_class_map', {})
-                predicted_label = -1 
-                
-                score_real = raw_prediction_scores.get(keywords_for_vlm[0], 0.0) if keywords_for_vlm and len(keywords_for_vlm)>0 else 0.0
-                score_ai = raw_prediction_scores.get(keywords_for_vlm[1], 0.0) if keywords_for_vlm and len(keywords_for_vlm)>1 else 0.0
-
-                if score_real > score_ai: 
-                    predicted_label = LABEL_REAL
-                elif score_ai > score_real: 
-                    predicted_label = LABEL_AI
-                elif score_real == 1.0 and score_ai == 1.0: 
-                     predicted_label = global_cfg.get("tie_breaking_label_for_generative", LABEL_AI) 
-                     sample_result["ambiguous_prediction"] = True
-                else: 
-                     predicted_label = global_cfg.get("default_label_for_generative_no_match", LABEL_AI) 
-                     sample_result["no_keyword_match"] = True
-                reasoning_kw_0 = keywords_for_vlm[0] if keywords_for_vlm and len(keywords_for_vlm)>0 else "N/A"
-                reasoning_kw_1 = keywords_for_vlm[1] if keywords_for_vlm and len(keywords_for_vlm)>1 else "N/A"
-                sample_result["predicted_label_reasoning"] = f"Scores - RealKW ('{reasoning_kw_0}'): {score_real}, AIKW ('{reasoning_kw_1}'): {score_ai}"
-            else: 
-                raw_prediction_scores = vlm.predict(image, prompts_for_vlm)
-                sample_result["raw_scores"] = raw_prediction_scores
-                
-                prompt_to_class_map = prompt_strategy_config.get('params', {}).get('prompt_to_class_map')
-                if not prompt_to_class_map:
-                     prompt_to_class_map = {
-                         prompts_for_vlm[0]: LABEL_REAL,
-                         prompts_for_vlm[1]: LABEL_AI
-                     } if len(prompts_for_vlm) >= 2 else {}
-
-                best_prompt = None
-                max_score = -float('inf')
-                for prompt, score in raw_prediction_scores.items():
-                    if score > max_score:
-                        max_score = score
-                        best_prompt = prompt
-                
-                if best_prompt and best_prompt in prompt_to_class_map:
-                    predicted_label = prompt_to_class_map[best_prompt]
+                if not prompt_scores_list or not prompt_scores_list[0]:
+                    print(f"Warning: predict_batch for {model_name_unique} returned empty or invalid scores for image {i}. Using default label.")
+                    predicted_label = prompt_strategy.default_label_if_no_match
+                    prompt_scores_output = {}
                 else:
-                    predicted_label = LABEL_AI # Default, consider making this configurable
-                    if prompts_for_vlm and len(prompts_for_vlm) >=2 : # Simplified fallback
-                        if best_prompt == prompts_for_vlm[0]: predicted_label = LABEL_REAL
-                        elif best_prompt == prompts_for_vlm[1]: predicted_label = LABEL_AI
-                    print(f"Warning for {model_run_name}: Best prompt '{best_prompt}' not in prompt_to_class_map or map is empty for {image_path}. Defaulting to {predicted_label}.")
+                    prompt_scores = prompt_scores_list[0]
+                    prompt_scores_output = prompt_scores # For saving
+                    
+                    if not prompt_scores: # Should be caught above, but double check
+                        best_prompt_text = None
+                    else:
+                        best_prompt_text = max(prompt_scores, key=prompt_scores.get)
+                    
+                    predicted_label = None
+                    if best_prompt_text:
+                        # This is where GenImageDetectPrompts.get_class_for_prompt (with its debug logs) will be called.
+                        predicted_label = prompt_strategy.get_class_for_prompt(best_prompt_text)
+                    
+                    if predicted_label is None: # Fallback if prompt not in map or no best_prompt
+                        if best_prompt_text:
+                            # The warning about specific prompt not mapping is now inside get_class_for_prompt.
+                            # Here we just note that we are using a fallback.
+                            print(f"Info (run_evaluation_for_model): For {model_name_unique}, best prompt was '{best_prompt_text}'. Fallback label used after get_class_for_prompt returned None.")
+                        else:
+                            print(f"Info (run_evaluation_for_model): For {model_name_unique}, no best prompt from scores. Fallback label used.")
+                        predicted_label = prompt_strategy.default_label_if_no_match
 
-
-                sample_result["best_prompt"] = best_prompt
-                sample_result["max_score"] = max_score
+            except Exception as e:
+                print(f"Error during prediction for {model_name_unique}, image {i}: {e}. Using default label.")
+                # import traceback
+                # traceback.print_exc()
+                predicted_label = prompt_strategy.default_label_if_no_match
+                prompt_scores_output = {"error": str(e)}
             
             all_predictions.append(predicted_label)
-            all_labels.append(true_label)
-            sample_result["predicted_label"] = predicted_label
-            sample_result["predicted_class"] = idx_to_class.get(predicted_label, "unknown")
-            raw_results.append(sample_result)
+            all_true_labels.append(current_label_int)
+            all_prompt_score_outputs.append({"image_idx": i, "true_label": current_label_int, "predicted_label": predicted_label, "scores": prompt_scores_output})
 
-    # 3. Calculate and Print Metrics
-    print(f"Calculating metrics for {model_run_name}...")
-    eval_metrics = evaluate_predictions(all_predictions, all_labels, class_names_for_eval)
-    
-    print(f"--- Evaluation Metrics for {model_run_name} ---")
-    for metric, value in eval_metrics.items():
-        if metric == "classification_report":
-            print(f"{metric}:")
-            for k, v in value.items():
-                 print(f"  {k}: {v}")
-        else:
-            print(f"{metric}: {value}")
-    print("--------------------------")
+    # After loop, evaluate predictions
+    print(f"\nFinished predictions for {model_name_unique}.")
+    if not all_predictions or not all_true_labels:
+        print(f"No predictions made for {model_name_unique}. Skipping metrics calculation.")
+        return
 
-    # 4. Save Results
-    output_dir_base = global_cfg.get("output_dir_base", "results/zero_shot_eval")
-    # Create a subdirectory for this specific model run
-    model_specific_output_dir = os.path.join(output_dir_base, model_run_name)
-    os.makedirs(model_specific_output_dir, exist_ok=True)
+    output_dir_base = global_cfg_dict.get('output_dir_base', 'results/zero_shot_eval')
+    model_specific_output_dir = setup_output_directory(output_dir_base, model_name_unique, dataset_cfg_dict.get('root_dir', 'unknown_dataset'))
     
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    # Use model_run_name in filenames to distinguish if multiple configs are run (though timestamp helps)
-    
-    metrics_filename = os.path.join(model_specific_output_dir, f"metrics_{model_run_name}_{timestamp}.json")
-    with open(metrics_filename, 'w') as f:
-        json.dump(eval_metrics, f, indent=4)
-    print(f"Evaluation metrics for {model_run_name} saved to: {metrics_filename}")
+    evaluate_predictions(all_predictions, all_true_labels, model_name_unique, prompt_strategy, global_cfg_dict, model_specific_output_dir, all_prompt_score_outputs)
 
-    raw_results_filename = os.path.join(model_specific_output_dir, f"raw_results_{model_run_name}_{timestamp}.json")
-    with open(raw_results_filename, 'w') as f:
-        json.dump(raw_results, f, indent=4)
-    print(f"Raw per-sample results for {model_run_name} saved to: {raw_results_filename}")
+def setup_dataset_and_loader(dataset_cfg, global_cfg, split='val'):
+    print(f"Setting up dataset for split: {split}")
+    data_root_dir = dataset_cfg['root_dir']
+    class_to_idx = dataset_cfg.get('class_to_idx')
     
-    # Save the specific model_run_config used for this run (or part of the main config)
-    # For simplicity, we still copy the main config, but label it with model_run_name
-    copied_config_filename = os.path.join(model_specific_output_dir, f"config_used_for_{model_run_name}_{timestamp}.yaml")
-    # To save only the relevant part:
-    # with open(copied_config_filename, 'w') as f:
-    #    json.dump({"model_run_config": model_run_config, "dataset_config": global_cfg['dataset'], "prompt_config": global_cfg['vlm']['prompt_config']}, f, indent=4)
-    # For now, copy the whole config_path from main function context.
-    # This requires passing config_path to this function or handling it in the main loop.
-    # Let's adjust run_zero_shot_evaluation to handle this.
+    # Ensure the split-specific directory exists (e.g., data_root_dir/val)
+    split_dir = os.path.join(data_root_dir, split)
+    if not os.path.exists(split_dir) or not os.path.isdir(split_dir):
+        print(f"Error: Split directory {split_dir} does not exist or is not a directory.")
+        return None, None
 
-    print(f"--- Finished evaluation for model: {model_run_name} ---\n")
-    return model_specific_output_dir # Return for potential further use (like copying config)
+    full_dataset = VLMGenImageDataset(
+        root_dir=data_root_dir, 
+        split=split, 
+        class_to_idx=class_to_idx,
+        transform=None 
+    )
+
+    if not full_dataset.image_paths:
+        print(f"Error: Full dataset for split '{split}' is empty after initialization. Check dataset structure and paths.")
+        return None, None
+    print(f"Full dataset for '{split}' initialized with {len(full_dataset.image_paths)} images.")
+    # print(f"Example labels from full_dataset: {full_dataset.labels[:10]}")
+    # print(f"Class to index map used by dataset: {full_dataset.class_to_idx}")
+    # --- Added detailed debug prints for dataset contents ---
+    # print(f"Debug Dataset Check: Root directory used: {full_dataset.root_dir}")
+    # print(f"Debug Dataset Check: Split used: {full_dataset.split}")
+    # print(f"Debug Dataset Check: Class to index map in dataset: {full_dataset.class_to_idx}")
+    # if hasattr(full_dataset, 'image_paths') and full_dataset.image_paths:
+    #     print(f"Debug Dataset Check: Example image paths (first 3): {full_dataset.image_paths[:3]}")
+    # else:
+    #     print("Debug Dataset Check: full_dataset.image_paths is empty or not available.")
+    # if hasattr(full_dataset, 'labels') and full_dataset.labels:
+    #     print(f"Debug Dataset Check: Example labels (first 3): {full_dataset.labels[:3]}")
+    #     unique_labels_debug, counts_debug = np.unique(np.array(full_dataset.labels), return_counts=True)
+    #     print(f"Debug Dataset Check: Initial class distribution in full_dataset (from VLMGenImageDataset directly): {dict(zip(unique_labels_debug, counts_debug))}")
+    # else:
+    #     print("Debug Dataset Check: full_dataset.labels is empty or not available for initial distribution check.")
+    # --- End of added debug prints ---
+
+    eval_dataset_for_loader = full_dataset
+    num_samples_eval = dataset_cfg.get('num_samples_eval', None)
+
+    if num_samples_eval is not None and num_samples_eval > 0 and num_samples_eval < len(full_dataset):
+        print(f"Attempting to sample {num_samples_eval} images from '{split}' split ({len(full_dataset)} total)...")
+        labels_for_stratification = np.array(full_dataset.labels)
+        unique_labels, counts = np.unique(labels_for_stratification, return_counts=True)
+        print(f"Class distribution in full '{split}' set: {dict(zip(unique_labels, counts))}")
+
+        # Conditions for attempting stratification:
+        # 1. More than one class present.
+        # 2. Desired sample size is less than total samples.
+        # 3. Each class for stratification must have at least 2 samples if num_samples_eval is a fraction, 
+        #    or more generally, enough samples for train_test_split to work without error.
+        #    A common threshold is that n_splits (implicitly 1 for test_size) must be <= n_samples_per_class.
+        #    So, each class should have at least 1 sample, but practically sklearn might need more for some scenarios.
+        
+        can_stratify = True
+        if len(unique_labels) < 2:
+            print("Warning: Only one class present in the dataset. Cannot perform stratified sampling.")
+            can_stratify = False
+        elif any(c < 1 for c in counts): # Should not happen if dataset loaded correctly
+            print("Warning: At least one class has zero samples. Cannot perform stratified sampling.")
+            can_stratify = False
+        # If num_samples_eval is very small relative to class count, stratification might not be meaningful or possible
+        # For train_test_split, stratify requires at least 2 members for any class if it's to be split.
+        # If we are taking num_samples_eval, then remaining is len(full_dataset) - num_samples_eval.
+        # Both parts need to respect class counts for stratify. Min count for any class for stratify is typically 2.
+        # If num_samples_eval means we are selecting a small subset, we need to ensure min(counts) is large enough.
+        # A simpler check: if any(counts < 2) and we are trying to stratify, it might be an issue.
+        # For our purpose, we are forming one subset (the sampled one). 
+        # sklearn stratify needs n_samples >= n_classes for y, and for test_size, it means each class in y must have at least n_splits (implicitly 1) examples.
+        # The most restrictive is if a class has only 1 sample, it cannot be split. So it must go entirely to train or test.
+
+        if can_stratify:
+            try:
+                full_indices = np.arange(len(full_dataset))
+                _ , sampled_indices = train_test_split(
+                    full_indices, 
+                    test_size=int(num_samples_eval), 
+                    stratify=labels_for_stratification, 
+                    random_state=global_cfg.get('random_seed', None)
+                )
+                eval_dataset_for_loader = torch.utils.data.Subset(full_dataset, sampled_indices)
+                print(f"Stratified sampling successful. Sampled {len(eval_dataset_for_loader)} images.")
+                sampled_labels = [full_dataset.labels[i] for i in sampled_indices]
+                unique_sampled, counts_sampled = np.unique(sampled_labels, return_counts=True)
+                print(f"Sampled subset class distribution: {dict(zip(unique_sampled, counts_sampled))}")
+            except ValueError as e:
+                print(f"Warning: Stratified sampling failed ({e}). Falling back to random sampling.")
+                can_stratify = False # Mark to fallback
+        
+        if not can_stratify: # Fallback to random sampling
+            print(f"Using random sampling for {num_samples_eval} samples.")
+            indices = np.random.choice(len(full_dataset), int(num_samples_eval), replace=False)
+            eval_dataset_for_loader = torch.utils.data.Subset(full_dataset, indices)
+
+    elif num_samples_eval is not None and num_samples_eval >= len(full_dataset):
+        print(f"num_samples_eval ({num_samples_eval}) is >= total dataset size ({len(full_dataset)}). Using full dataset for split '{split}'.")
+    elif num_samples_eval is None or num_samples_eval <= 0:
+        print(f"num_samples_eval not specified or invalid. Using full dataset for split '{split}'.")
+
+    if len(eval_dataset_for_loader) == 0:
+        print(f"Error: Dataset for loader (split '{split}') is empty after sampling/selection. Cannot create DataLoader.")
+        return None, None
+
+    print(f"Final dataset size for loader for split '{split}': {len(eval_dataset_for_loader)}")
+    
+    batch_size = global_cfg.get('batch_size', 1)
+    num_workers = global_cfg.get('num_workers', 2)
+    data_loader = DataLoader(
+        eval_dataset_for_loader,
+        batch_size=batch_size, 
+        shuffle=False, # Usually false for evaluation
+        num_workers=num_workers, 
+        pin_memory=True,
+        collate_fn=vlm_collate_fn 
+    )
+    print(f"DataLoader created for split '{split}' with batch_size={batch_size}, num_workers={num_workers}.")
+    return eval_dataset_for_loader, data_loader
 
 def run_zero_shot_evaluation(config_path: str):
     """
@@ -265,7 +414,7 @@ def run_zero_shot_evaluation(config_path: str):
     print(f"Random seed set to: {seed}")
 
     # GPU Configuration
-    gpu_id = cfg.get("eval_gpu_id", 3) 
+    gpu_id = cfg.get("eval_gpu_id", 0) 
     if torch.cuda.is_available():
         if gpu_id is not None:
             try:
@@ -285,120 +434,22 @@ def run_zero_shot_evaluation(config_path: str):
     # 2. Initialize Prompt Strategy (shared for all models in this run)
     print("Initializing shared prompt strategy...")
     prompt_strategy_config = cfg['vlm']['prompt_config']
-    prompt_strategy = get_instance_from_config(prompt_strategy_config)
-    print(f"Shared Prompt Strategy {type(prompt_strategy).__name__} loaded.")
+    # prompt_strategy instance is now created inside run_evaluation_for_model
 
-    # 3. Prepare Dataset (shared for all models in this run)
-    print("Preparing shared dataset...")
     dataset_config = cfg['dataset']
-    # GenImageDataset specific: ensure class_to_idx matches our LABEL_REAL, LABEL_AI
-    # The dataset_config should ideally have a class_to_idx that maps 'nature' to 0 and 'ai' to 1
-    # For evaluation, we usually use the 'val' or a 'test' split.
-    # The dataset root should be the specific generator folder you want to test, e.g., stable_diffusion_v_1_5/
-    dataset_root = dataset_config['root_dir'] # This should point to the specific generator like /path/to/stable_diffusion_v_1_5
-    eval_split = dataset_config.get('eval_split', 'val') # or 'test'
-    num_samples_to_eval = dataset_config.get('num_samples_eval', None) # New: for sampling
-
-    # The GenImageDataset takes the *parent* of train/val (e.g. imagenet_ai_0424_sdv5)
-    # and then split='val' will look for imagenet_ai_0424_sdv5/val/ai and imagenet_ai_0424_sdv5/val/nature
-    # So, dataset_root should be e.g. "/raid/dannyliu/dataset/GAI_Dataset/genimage/stable_diffusion_v_1_5/imagenet_ai_0424_sdv5/"
     
-    # We need to define the class names for evaluation metrics and for prompt strategy if it uses them
-    # This should align with dataset_config['class_to_idx']
+    # --- Define class_to_idx and idx_to_class here ---
+    # This should align with dataset_config['class_to_idx'] from YAML
     # Default: {'nature': 0, 'ai': 1}
     class_to_idx = dataset_config.get('class_to_idx', {'nature': LABEL_REAL, 'ai': LABEL_AI})
     idx_to_class = {v: k for k, v in class_to_idx.items()}
-    class_names_for_eval = [idx_to_class[LABEL_REAL], idx_to_class[LABEL_AI]] # e.g. ['nature', 'ai']
-
-    # The transform for VLM predict methods should ideally be minimal or identity,
-    # as VLMs often have their own internal processors.
-    # The GenImageDataset's default transform resizes and normalizes, which might be okay
-    # or might need to be adjusted/removed if the VLM processor handles it.
-    # For now, we use a minimal transform that just converts to PIL Image if not already.
-    # Our VLM wrappers expect PIL.Image.Image.
-    # GenImageDataset already loads PIL images and returns (transformed_tensor, label)
-    # The VLM wrappers expect PIL images. So, we might need a custom dataset or modify GenImageDataset for this script
-    # to return (PIL.Image, label) for zero-shot, or adapt the VLM wrappers.
-    # For simplicity, let's assume we'll get PIL images from the dataset for now.
-    # This might require a custom transform or a flag in GenImageDataset.
+    # class_names_for_eval will be derived inside evaluate_predictions based on these
+    # --- End definition ---
     
-    # Let's create a version of the dataset that does not apply ToTensor or Normalize for VLM input
-    # We will define a simple transform that only ensures it's RGB.
-    from torchvision import transforms
-    pil_transform = transforms.Compose([
-        # transforms.Resize((224,224)), # VLMs might have their own size, CLIP does, LLaVA too
-        # The VLM processors will handle resizing.
-    ])
-
-    eval_dataset = GenImageDataset(
-        root_dir=dataset_root, 
-        split=eval_split, 
-        transform=pil_transform, # Pass minimal transform; VLM's processor will handle specifics
-        class_to_idx=class_to_idx
-    )
-    # We need to modify GenImageDataset or use a different one if it doesn't return PIL images
-    # when transform is minimal. Let's assume __getitem__ returns (PIL.Image, label) if transform is basic.
-    # Forcing GenImageDataset to return PIL Images for VLM:
-    # A quick fix would be to modify its __getitem__ or pass a special transform.
-    # Let's assume we have a way to get (PIL.Image, label).
-    # For this script, we'll override the transform in GenImageDataset to return PIL.
-    # A cleaner way: Add a parameter to GenImageDataset like `return_pil_image=True`.
-    # For now, we assume the loaded eval_dataset yields (PIL.Image, int_label)
-
-    # Hacky way to ensure PIL images if GenImageDataset doesn't support it directly:
-    # Wrap dataset or modify its __getitem__ logic for this script
-    class VLMGenImageDataset(GenImageDataset):
-        # __init__ can be inherited from GenImageDataset if no special init logic is needed for VLMGenImageDataset itself.
-        # The GenImageDataset is initialized with transform=None by the calling code for this VLM path.
-        def __getitem__(self, idx):
-            img_path = self.image_paths[idx] # Populated by GenImageDataset's __init__
-            label = self.labels[idx]         # Populated by GenImageDataset's __init__
-            
-            try:
-                image_pil = Image.open(img_path).convert('RGB')
-            except Exception as e:
-                print(f"Error loading image {img_path} in VLMGenImageDataset: {e}.")
-                # Propagate the error so DataLoader can handle it (e.g., skip if num_workers > 0 and it doesn't crash the worker)
-                # Or raise a more specific error / return a placeholder if the main loop is robust to it.
-                raise RuntimeError(f"Failed to load image {img_path}: {e}")
-            
-            # Return PIL image and label, as VLM wrappers expect PIL images.
-            # Collate function will handle batching these.
-            return image_pil, label
-
-    full_eval_dataset = VLMGenImageDataset( # Changed variable name here
-        root_dir=dataset_root,
-        split=eval_split,
-        transform=None, # No PyTorch transforms, VLM processor handles it
-        class_to_idx=class_to_idx
-    )
-
-    if len(full_eval_dataset) == 0:
-        print(f"Error: Full dataset is empty. Check path: {os.path.join(dataset_root, eval_split)}")
-        return
+    # The VLMGenImageDataset definition is now at the top level of the file.
+    # The local instantiation of dataset/dataloader was also moved into run_evaluation_for_model.
+    # The main loop will call run_evaluation_for_model which internally calls setup_dataset_and_loader.
     
-    # Apply sampling if num_samples_to_eval is set
-    if num_samples_to_eval is not None and num_samples_to_eval > 0 and num_samples_to_eval < len(full_eval_dataset):
-        print(f"Randomly sampling {num_samples_to_eval} images from the full dataset ({len(full_eval_dataset)} total) using seed {seed}.")
-        # Ensure torch.randperm uses the seed set earlier
-        indices = torch.randperm(len(full_eval_dataset))[:num_samples_to_eval].tolist()
-        eval_dataset_for_loader = torch.utils.data.Subset(full_eval_dataset, indices)
-    else:
-        eval_dataset_for_loader = full_eval_dataset
-        if num_samples_to_eval is not None and num_samples_to_eval >= len(full_eval_dataset):
-            print(f"Requested num_samples_eval ({num_samples_to_eval}) is >= total samples ({len(full_eval_dataset)}). Using all samples from full dataset.")
-        elif num_samples_to_eval is None:
-            print("num_samples_eval not specified. Using all samples from full dataset.")
-
-
-    if len(eval_dataset_for_loader) == 0:
-        print(f"Error: Dataset for loader is empty. Check path: {os.path.join(dataset_root, eval_split)} and sampling config.")
-        return
-
-    # Adjust print statement to reflect the loader's dataset size
-    print(f"Dataset for DataLoader: {len(eval_dataset_for_loader)} samples (split: '{eval_split}', root: {dataset_root}).")
-
-    # 4. Loop through each VLM configuration and run evaluation
     vlm_configs_to_run = cfg['vlm'].get('model_configs')
     if not vlm_configs_to_run:
         print("Error: No model configurations found in 'vlm.model_configs' in the YAML.")
@@ -412,23 +463,24 @@ def run_zero_shot_evaluation(config_path: str):
             return
 
     for model_run_config in vlm_configs_to_run:
+        # Note: prompt_strategy is now initialized inside run_evaluation_for_model
         model_specific_output_dir = run_evaluation_for_model(
-            model_run_config=model_run_config,
-            global_cfg=cfg,
-            prompt_strategy=prompt_strategy,
-            eval_dataset_for_loader=eval_dataset_for_loader,
-            device=device, # device is passed but VLM wrappers manage their own internal device.
-            class_names_for_eval=class_names_for_eval,
-            idx_to_class=idx_to_class
+            model_name_unique=model_run_config['name'],
+            model_config_dict=model_run_config['model_config'],
+            prompt_strategy_config_dict=prompt_strategy_config, # Pass the config dict here
+            dataset_cfg_dict=dataset_config,
+            global_cfg_dict=cfg
         )
         
-        # Save the main config file used for this run into the model-specific directory
         if model_specific_output_dir:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S") # Re-generate for unique config copy name
-            model_run_name = model_run_config.get('name', 'unknown_model')
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            model_run_name = model_run_config.get('name', 'unknown_model') # get name again for safety
             copied_config_filename = os.path.join(model_specific_output_dir, f"config_used_MAIN_{model_run_name}_{timestamp}.yaml")
-            shutil.copy(config_path, copied_config_filename)
-            print(f"Main configuration file copied to: {copied_config_filename} for model {model_run_name}")
+            try:
+                shutil.copy(config_path, copied_config_filename)
+                print(f"Main configuration file copied to: {copied_config_filename} for model {model_run_name}")
+            except Exception as e_copy:
+                print(f"Error copying config file for {model_run_name}: {e_copy}")
 
     print("\nAll evaluations complete.")
 

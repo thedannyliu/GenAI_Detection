@@ -39,7 +39,6 @@ class GenImageDataset(Dataset):
         
         # Load nature (real) images
         if os.path.exists(self.nature_dir) and os.path.isdir(self.nature_dir):
-            # Check if the first level items are directories (class folders) or files
             first_item_in_nature = next(os.scandir(self.nature_dir), None)
             if first_item_in_nature and first_item_in_nature.is_dir():
                 # Original logic: Iterate through class folders
@@ -47,20 +46,20 @@ class GenImageDataset(Dataset):
                     class_dir_path = os.path.join(self.nature_dir, class_name_dir)
                     if os.path.isdir(class_dir_path):
                         for img_name in os.listdir(class_dir_path):
-                            if img_name.endswith(('.jpg', '.jpeg', '.png')):
+                            if img_name.lower().endswith(('.jpg', '.jpeg', '.png')): # Check lowercase
                                 self.image_paths.append(os.path.join(class_dir_path, img_name))
                                 self.labels.append(self.class_to_idx["nature"])
             elif first_item_in_nature and first_item_in_nature.is_file():
                 # Modified logic: Images are directly under nature_dir
                 for img_name in os.listdir(self.nature_dir):
                     img_path = os.path.join(self.nature_dir, img_name)
-                    if os.path.isfile(img_path) and img_name.endswith(('.jpg', '.jpeg', '.png')):
+                    if os.path.isfile(img_path) and img_name.lower().endswith(('.jpg', '.jpeg', '.png')): # Check lowercase
                         self.image_paths.append(img_path)
                         self.labels.append(self.class_to_idx["nature"])
             # else: the directory is empty or contains non-image/non-dir items only at first level.
         else:
             print(f"Warning: Nature directory not found or is not a directory: {self.nature_dir}")
-
+        
         # Load AI-generated images
         if os.path.exists(self.ai_dir) and os.path.isdir(self.ai_dir):
             first_item_in_ai = next(os.scandir(self.ai_dir), None)
@@ -70,14 +69,14 @@ class GenImageDataset(Dataset):
                     class_dir_path = os.path.join(self.ai_dir, class_name_dir)
                     if os.path.isdir(class_dir_path):
                         for img_name in os.listdir(class_dir_path):
-                            if img_name.endswith(('.jpg', '.jpeg', '.png')):
+                            if img_name.lower().endswith(('.jpg', '.jpeg', '.png')): # Check lowercase
                                 self.image_paths.append(os.path.join(class_dir_path, img_name))
                                 self.labels.append(self.class_to_idx["ai"])
             elif first_item_in_ai and first_item_in_ai.is_file():
                 # Modified logic: Images are directly under ai_dir
                 for img_name in os.listdir(self.ai_dir):
                     img_path = os.path.join(self.ai_dir, img_name)
-                    if os.path.isfile(img_path) and img_name.endswith(('.jpg', '.jpeg', '.png')):
+                    if os.path.isfile(img_path) and img_name.lower().endswith(('.jpg', '.jpeg', '.png')): # Check lowercase
                         self.image_paths.append(img_path)
                         self.labels.append(self.class_to_idx["ai"])
             # else: the directory is empty or contains non-image/non-dir items only at first level.

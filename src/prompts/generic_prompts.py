@@ -1,4 +1,5 @@
-from typing import List, Dict, Any
+from PIL import Image
+from typing import List, Dict, Any, Optional
 from .base_prompt_strategy import BasePromptStrategy
 
 class GenImageDetectPrompts(BasePromptStrategy):
@@ -8,6 +9,16 @@ class GenImageDetectPrompts(BasePromptStrategy):
     """
     def __init__(self, config: Dict[str, Any] = None):
         super().__init__(config)
+        # Normalize keys in prompt_to_class_map and keyword_to_class_map upon initialization
+        self.prompt_to_class_map: Dict[str, int] = {
+            k.lower().strip(): v 
+            for k, v in self.config.get("prompt_to_class_map", {}).items()
+        }
+        self.keyword_to_class_map: Dict[str, int] = {
+            k.lower().strip(): v 
+            for k, v in self.config.get("keyword_to_class_map", {}).items()
+        }
+        self.default_label_if_no_match: int = self.config.get("default_label_if_no_match", 1) # Default to AI if not specified
         # Default prompts for discriminative models (e.g., CLIP)
         self.default_discriminative_prompts = [
             "a real photograph",
@@ -58,6 +69,40 @@ class GenImageDetectPrompts(BasePromptStrategy):
         """
         return self.config.get("generative_response_keywords", self.default_keywords)
 
+    def get_class_for_prompt(self, prompt_text: str) -> Optional[int]:
+        """Returns the class index for a given prompt text, or None if not found."""
+        # Normalize the prompt text for lookup (e.g., lowercasing)
+        normalized_prompt = prompt_text.lower().strip()
+        
+        # Direct match in prompt_to_class_map
+        if normalized_prompt in self.prompt_to_class_map:
+            return self.prompt_to_class_map[normalized_prompt]
+        
+        # --- Begin Debug Block for Missing Prompt ---
+        if prompt_text in self.prompt_to_class_map: # Check original casing too, just in case
+             # This case should ideally not be hit if normalization is consistent
+             print(f"DEBUG (GenImageDetectPrompts): Prompt '{prompt_text}' found with original casing but not normalized '{normalized_prompt}'. This is unusual.")
+             return self.prompt_to_class_map[prompt_text]
+
+        # If not found, print debug information before returning None
+        # This helps diagnose why a specific prompt might not be mapping correctly.
+        print(f"DEBUG (GenImageDetectPrompts): Prompt '{prompt_text}' (normalized: '{normalized_prompt}') not found in prompt_to_class_map.")
+        print(f"DEBUG (GenImageDetectPrompts): Current prompt_to_class_map (normalized keys used for lookup): {self.prompt_to_class_map}")
+        # You might also want to log the original config's map if it differs from the processed one stored in self.prompt_to_class_map
+        # print(f"DEBUG (GenImageDetectPrompts): Original config map was: {self.config.get('prompt_to_class_map', {})}")
+        # --- End Debug Block ---
+
+        return None # Default if no direct match
+
+    def get_class_for_keywords(self, text: str) -> Optional[int]:
+        # Implementation of get_class_for_keywords method
+        pass
+
+    def get_prompts_for_image(self, image: Optional[Image.Image] = None, class_label: Optional[int] = None) -> List[str]:
+        """Returns a list of prompts, typically for discriminative VLMs.
+        Ignores image and class_label for this generic strategy, returning general prompts.
+        """
+        return self.get_prompts(class_names=None, image_info=None)
 
 class SimpleBinaryPrompts(BasePromptStrategy):
     """

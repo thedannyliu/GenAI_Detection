@@ -11,6 +11,30 @@ This directory (`src/models/vlm/`) houses the core implementations for various V
 - **Extensibility**: The structure allows for easy addition of new VLMs by creating a new class inheriting from `BaseVLM` and implementing the required methods.
 - **Decoupling from `nn.Module`**: The wrappers themselves are not `torch.nn.Module` subclasses. Instead, they manage an underlying `nn.Module` (the actual VLM from Hugging Face). This simplifies their use for direct inference and allows flexibility in how they might be incorporated into larger PyTorch training workflows if needed (e.g., by accessing `wrapper.model`).
 
+## Underlying PyTorch Model Access
+
+It is important to note that while the VLM wrappers (e.g., `CLIPModelWrapper`, `BlipModelWrapper`) are not themselves `torch.nn.Module` instances, they load and manage the actual Hugging Face PyTorch model (which *is* an `nn.Module`) as an attribute, typically named `self.model` (for the main model) and `self.processor` (for the associated preprocessor).
+
+This design means that if you need to interact directly with the underlying PyTorch model—for example, to move it to a specific device (`.to(device)`), set it to evaluation mode (`.eval()`), or access its parameters for fine-tuning—you should operate on this `self.model` attribute.
+
+**Example**: 
+To set a wrapped CLIP model to evaluation mode and move it to a CUDA device:
+```python
+# Assuming 'vlm_wrapper' is an instance of CLIPModelWrapper
+# and 'device' is your target torch.device
+
+if hasattr(vlm_wrapper, 'model') and isinstance(vlm_wrapper.model, torch.nn.Module):
+    vlm_wrapper.model.eval()      # Set the underlying Hugging Face model to eval mode
+    vlm_wrapper.model.to(device)  # Move the underlying model to the target device
+
+if hasattr(vlm_wrapper, 'processor'):
+    # Processors don't typically have an eval mode but might need device context for some operations
+    # For many Hugging Face processors, they don't need to be explicitly moved to a device 
+    # unless they create tensors internally during preprocessing without a device argument.
+    pass 
+```
+This is particularly relevant when using these wrappers in scripts like `src/experiments/zero_shot_vlm_eval.py`, where such operations are necessary.
+
 ## Available Model Wrappers
 
 - `clip_model.py`: Implements `CLIPModelWrapper` for CLIP models.
@@ -50,6 +74,18 @@ from PIL import Image
 # keywords_to_find = ["real", "fake"]
 # predictions = llava_vlm.predict(img, keywords_to_find)
 # print(f"LLaVA Predictions (keyword presence): {predictions}")
+
+# Example: Load BLIP
+blip_config = {
+    "model_id": "Salesforce/blip-itm-large-coco", # For image-text matching (COCO-trained)
+    "task": "image-text-matching"
+}
+blip_vlm = BlipModelWrapper(model_name="BLIP-ITM-L-COCO", config=blip_config)
+
+img = Image.open("path/to/your/image.jpg")
+prompts = ["a genuine photograph", "a computer-generated artwork"]
+predictions = blip_vlm.predict(img, prompts)
+print(f"BLIP Predictions: {predictions}")
 ```
 
 ## Future Extensions

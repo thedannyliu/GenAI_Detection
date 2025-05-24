@@ -1,7 +1,7 @@
 # Configuration for Zero-Shot VLM Evaluation
 
 # GPU for evaluation (e.g., 0, 1, 2, 3). Set to null or remove for default/CPU.
-eval_gpu_id: 3 
+eval_gpu_id: 0 # USER NEEDS TO CHANGE THIS TO A VALID A100 GPU ID (e.g., 0)
 random_seed: 42 # Seed for random number generators to ensure reproducibility
 
 batch_size: 1 # VLMs typically process one image at a time for zero-shot with PIL inputs
@@ -42,7 +42,7 @@ vlm:
         params:
           model_name: "BLIP-ITM-L"
           config:
-            model_id: "Salesforce/blip-itm-large-eval"
+            model_id: "Salesforce/blip-itm-large-coco"
             task: "image-text-matching"
 
     - name: "InstructBLIP-Vicuna-7B"
