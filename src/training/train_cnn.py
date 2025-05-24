@@ -418,6 +418,15 @@ def evaluate_model(model, data_loader, criterion, device, config, eval_name="Tes
     print("\n  Confusion Matrix:")
     print(cm)
 
+    # Prepare metrics for JSON output
+    evaluation_summary = {
+        "eval_name": eval_name,
+        "avg_loss": avg_loss,
+        "accuracy": accuracy,
+        "classification_report": report, # report is already a dict
+        "confusion_matrix": cm.tolist() # Convert numpy array to list for JSON serialization
+    }
+
     if writer and global_step is not None: # global_step might be epoch or an arbitrary step
         writer.add_scalar(f'Eval/{eval_name}/Loss', avg_loss, global_step)
         writer.add_scalar(f'Eval/{eval_name}/Accuracy', accuracy, global_step)
@@ -440,6 +449,7 @@ def evaluate_model(model, data_loader, criterion, device, config, eval_name="Tes
 
         # Plot ROC Curve (for binary or one-vs-rest)
         # Assuming binary classification, positive class is 'ai' (index 1 usually)
+        roc_auc = None # Initialize roc_auc
         if len(class_names) == 2: # Binary case
             # Use probabilities of the positive class (e.g., 'ai')
             # Ensure class_to_idx aligns, typically 'ai' is 0 and 'nature' is 1 or vice-versa.
@@ -455,7 +465,8 @@ def evaluate_model(model, data_loader, criterion, device, config, eval_name="Tes
                 y_probs = np.array(all_probs)[:, positive_class_idx]
                 
                 fpr, tpr, thresholds = roc_curve(all_labels, y_probs, pos_label=positive_class_idx)
-                roc_auc = roc_auc_score(all_labels, y_probs)
+                roc_auc = roc_auc_score(all_labels, y_probs) # Calculate ROC AUC
+                evaluation_summary["roc_auc"] = roc_auc # Add to summary
 
                 plt.figure(figsize=(8,6))
                 plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (area = {roc_auc:.2f})')
@@ -473,6 +484,14 @@ def evaluate_model(model, data_loader, criterion, device, config, eval_name="Tes
         else: # Multiclass ROC is more complex, skip for now or implement one-vs-rest
             print("ROC curve generation is currently supported for binary classification only.")
 
+    # Save evaluation summary to JSON
+    metrics_filename = plots_dir / "evaluation_metrics.json"
+    try:
+        with open(metrics_filename, 'w') as f:
+            json.dump(evaluation_summary, f, indent=4)
+        print(f"Evaluation metrics saved to {metrics_filename}")
+    except Exception as e:
+        print(f"Error saving evaluation metrics to {metrics_filename}: {e}")
 
     return accuracy, avg_loss
 
