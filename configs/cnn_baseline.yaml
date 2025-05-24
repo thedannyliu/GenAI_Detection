@@ -40,7 +40,7 @@ training:
     gamma: 0.1
   
   # Training loop
-  num_epochs: 2 # Adjusted from 2000 for a more reasonable starting point
+  num_epochs: 2000 # Adjusted from 2000 for a more reasonable starting point
   
   # Checkpointing
   checkpoint_dir: "checkpoints" # Relative to general.output_dir / model.name

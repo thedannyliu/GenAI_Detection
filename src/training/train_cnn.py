@@ -18,6 +18,7 @@ from PIL import Image
 import torch.nn.functional as F # Needed for Grad-CAM
 from tqdm import tqdm # Import tqdm
 from torch.utils.tensorboard import SummaryWriter
+import cv2 # Added for Grad-CAM saving
 
 # 假設的路徑，後續會從 src.data_processing 和 src.models 匯入
 # from src.data_processing.custom_dataset import GenImageDataset
@@ -30,6 +31,115 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..')) # Add proje
 
 from src.data_processing.custom_dataset import GenImageDataset
 from src.models.baseline_classifiers import ResNet50Classifier
+
+class GradCAM:
+    def __init__(self, model, target_layer_name):
+        self.model = model
+        self.target_layer_name = target_layer_name
+        self.gradients = None
+        self.activations = None
+
+        # Find the target layer
+        target_layer = None
+        for name, module in self.model.named_modules():
+            if name == self.target_layer_name:
+                target_layer = module
+                break
+        if target_layer is None:
+            # Fallback if exact name not found (e.g. if model structure changed slightly)
+            # Try to find it by type or a more general part of the name
+            print(f"Warning: Target layer '{self.target_layer_name}' not found by exact name match.")
+            # Example: if target_layer_name was 'backbone.layer4.2.conv3'
+            # we might try 'backbone.layer4' as a fallback if it exists
+            parent_name = '.'.join(self.target_layer_name.split('.')[:-1])
+            if parent_name:
+                for name, module in self.model.named_modules():
+                    if name == parent_name:
+                        target_layer = module
+                        print(f"Using fallback layer: '{parent_name}'")
+                        break
+            if target_layer is None: # Still not found
+                 raise ValueError(f"Target layer {self.target_layer_name} not found in the model. Available layers: {[n for n, _ in self.model.named_modules()]}")
+
+
+        target_layer.register_forward_hook(self._save_activations)
+        target_layer.register_full_backward_hook(self._save_gradients) # Use register_full_backward_hook for non-leaf tensors
+
+    def _save_activations(self, module, input, output):
+        self.activations = output
+
+    def _save_gradients(self, module, grad_input, grad_output):
+        # grad_output is a tuple, we need the first element
+        self.gradients = grad_output[0]
+
+    def __call__(self, x, class_idx=None):
+        self.model.eval() # Ensure model is in eval mode
+        output = self.model(x)
+
+        if class_idx is None:
+            class_idx = torch.argmax(output, dim=1).item()
+
+        self.model.zero_grad()
+        # Create a one-hot vector for the target class
+        one_hot_output = torch.zeros_like(output)
+        one_hot_output[0][class_idx] = 1
+        
+        # Backward pass to get gradients
+        output.backward(gradient=one_hot_output, retain_graph=True) # retain_graph might be needed if called multiple times or in a loop
+
+        if self.gradients is None or self.activations is None:
+            # This can happen if the hooks are not triggered correctly, or if the target layer is not part of the computation graph for the given input/output.
+            print("Warning: Gradients or activations are None. Ensure the target layer is correctly specified and used in the forward pass.")
+            return None, class_idx
+
+
+        # Global Average Pooling of gradients
+        pooled_gradients = torch.mean(self.gradients, dim=[0, 2, 3]) # Pool over H and W dimensions
+
+        # Weight activations by pooled gradients
+        activations_weighted = self.activations.clone() # clone to avoid modifying the stored activations
+        for i in range(pooled_gradients.size(0)):
+            activations_weighted[:, i, :, :] *= pooled_gradients[i]
+        
+        # Generate heatmap (sum channels)
+        heatmap = torch.mean(activations_weighted, dim=1).squeeze()
+        heatmap = F.relu(heatmap) # Apply ReLU
+        
+        # Normalize heatmap
+        if heatmap.max() > 0:
+            heatmap /= heatmap.max()
+        
+        return heatmap.cpu().detach().numpy(), class_idx
+
+def save_gradcam_image(original_image_tensor, heatmap_np, output_path, class_names, predicted_class_idx, true_label_idx=None):
+    # Convert original image tensor to numpy array (H, W, C) and scale to 0-255
+    img_np = original_image_tensor.squeeze().permute(1, 2, 0).cpu().numpy()
+    img_np = (img_np - img_np.min()) / (img_np.max() - img_np.min()) # Normalize to 0-1
+    img_np = (img_np * 255).astype(np.uint8)
+    
+    if img_np.shape[2] == 1: # Grayscale to BGR for cv2
+        img_np = cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR)
+    else: # Assuming RGB, convert to BGR for cv2
+        img_np = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+
+    # Resize heatmap to match image size and convert to uint8
+    heatmap_resized = cv2.resize(heatmap_np, (img_np.shape[1], img_np.shape[0]))
+    heatmap_uint8 = (heatmap_resized * 255).astype(np.uint8)
+    heatmap_color = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
+
+    # Superimpose heatmap on original image
+    superimposed_img = cv2.addWeighted(heatmap_color, 0.5, img_np, 0.5, 0)
+
+    # Add text for predicted and true class
+    pred_text = f"Pred: {class_names[predicted_class_idx]}"
+    cv2.putText(superimposed_img, pred_text, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    if true_label_idx is not None:
+        true_text = f"True: {class_names[true_label_idx]}"
+        cv2.putText(superimposed_img, true_text, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0) if predicted_class_idx == true_label_idx else (0, 0, 255), 2)
+
+    cv2.imwrite(str(output_path), superimposed_img)
+    # print(f"Grad-CAM image saved to {output_path}")
+
 
 def set_seed(seed_value=42):
     """Set seed for reproducibility."""
@@ -196,40 +306,174 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, device, c
     with open(history_path, 'w') as f:
         json.dump(training_history, f)
     print(f"Training history saved to {history_path}")
+
+    # Plot training history if enabled
+    if config['evaluation'].get('generate_plots', False):
+        plt.figure(figsize=(12, 5))
+        plt.subplot(1, 2, 1)
+        plt.plot(training_history['train_loss'], label='Train Loss')
+        plt.plot(training_history['val_loss'], label='Validation Loss')
+        plt.title('Loss Over Epochs')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.legend()
+        plt.grid(True)
+
+        plt.subplot(1, 2, 2)
+        plt.plot(training_history['train_acc'], label='Train Accuracy')
+        plt.plot(training_history['val_acc'], label='Validation Accuracy')
+        plt.title('Accuracy Over Epochs')
+        plt.xlabel('Epoch')
+        plt.ylabel('Accuracy')
+        plt.legend()
+        plt.grid(True)
+        
+        plot_filename = plots_dir / "training_curves.png"
+        plt.savefig(plot_filename)
+        plt.close()
+        print(f"Training curves plot saved to {plot_filename}")
+
     return str(best_model_path), str(last_model_path)
 
 def evaluate_model(model, data_loader, criterion, device, config, eval_name="Test Set", writer=None, global_step=0, grad_cam_instance=None, output_dir_for_eval=None):
-    # Access output_dir from the 'general' sub-config
-    output_dir = Path(config['general']['output_dir'])
-    plots_dir = output_dir / config['evaluation'].get('plot_dir', 'plots') / eval_name.lower().replace(" ", "_")
+    # Determine the correct plots directory for this evaluation context
+    # If output_dir_for_eval is provided (e.g., for specific runs or external eval), use it.
+    # Otherwise, construct it based on general config and eval_name.
+    if output_dir_for_eval:
+        plots_dir = Path(output_dir_for_eval) / config['evaluation'].get('plot_dir', 'plots') / eval_name.lower().replace(" ", "_").replace("(", "").replace(")", "")
+    else:
+        base_output_dir = Path(config['general']['output_dir'])
+        model_name = config['model'].get('name', 'default_model')
+        run_specific_output_dir = base_output_dir / model_name
+        plots_dir = run_specific_output_dir / config['evaluation'].get('plot_dir', 'plots') / eval_name.lower().replace(" ", "_").replace("(", "").replace(")", "")
+    
     plots_dir.mkdir(parents=True, exist_ok=True)
     class_names = list(data_loader.dataset.class_to_idx.keys())
+    generate_plots = config['evaluation'].get('generate_plots', False)
+    generate_gradcam = config['evaluation'].get('generate_gradcam', False) and grad_cam_instance is not None
+    gradcam_output_dir = plots_dir / "grad_cam_images"
+    if generate_gradcam:
+        gradcam_output_dir.mkdir(parents=True, exist_ok=True)
+        num_gradcam_samples = config['evaluation'].get('num_gradcam_samples', 5)
+
 
     model.eval()
     running_loss = 0.0
     all_preds = []
     all_labels = []
+    all_probs = [] # For ROC curve
 
     with torch.no_grad():
-        for inputs, labels in data_loader:
+        for i, (inputs, labels) in enumerate(tqdm(data_loader, desc=f"Evaluating {eval_name}")):
             inputs, labels = inputs.to(device), labels.to(device)
             outputs = model(inputs)
             loss = criterion(outputs, labels)
             running_loss += loss.item() * inputs.size(0)
+            
+            probs = F.softmax(outputs, dim=1) # Get probabilities for ROC
             _, predicted = torch.max(outputs.data, 1)
+            
             all_preds.extend(predicted.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
+            all_probs.extend(probs.cpu().numpy()) # Store probabilities
+
+            # Generate Grad-CAM for a few samples if enabled
+            if generate_gradcam and i < num_gradcam_samples : # Only for the first few batches to get N samples
+                for j in range(inputs.size(0)):
+                    if (i * data_loader.batch_size + j) < num_gradcam_samples:
+                        original_image_tensor = inputs[j].cpu()
+                        true_label_idx = labels[j].item()
+                        
+                        # It's better to use the model's prediction for Grad-CAM to see what the model "thinks"
+                        predicted_class_for_sample = predicted[j].item()
+
+                        # Ensure the input to GradCAM is a batch of 1
+                        single_input_for_gradcam = inputs[j].unsqueeze(0)
+                        
+                        with torch.enable_grad(): # Enable gradients specifically for Grad-CAM
+                            # The grad_cam_instance call itself performs the forward and backward pass
+                            # needed for Grad-CAM.
+                            heatmap_np, _ = grad_cam_instance(single_input_for_gradcam, class_idx=predicted_class_for_sample)
+
+                        if heatmap_np is not None:
+                            img_filename = f"gradcam_{eval_name.lower().replace(' ', '_')}_sample_{i*data_loader.batch_size+j}_pred_{class_names[predicted_class_for_sample]}_true_{class_names[true_label_idx]}.png"
+                            output_path = gradcam_output_dir / img_filename
+                            save_gradcam_image(original_image_tensor, heatmap_np, output_path, class_names, predicted_class_for_sample, true_label_idx)
+                        else:
+                            print(f"Skipping Grad-CAM for sample {i*data_loader.batch_size+j} due to heatmap generation error.")
+
 
     avg_loss = running_loss / len(data_loader.dataset)
     accuracy = accuracy_score(all_labels, all_preds)
     
-    print(f"Evaluation Loss: {avg_loss:.4f}")
-    print(f"Evaluation Accuracy: {accuracy:.4f}")
-    print("\nClassification Report:")
-    print(classification_report(all_labels, all_preds, target_names=class_names))
-    print("\nConfusion Matrix:")
-    print(confusion_matrix(all_labels, all_preds))
+    print(f"Evaluation results for {eval_name}:")
+    print(f"  Loss: {avg_loss:.4f}")
+    print(f"  Accuracy: {accuracy:.4f}")
     
+    report = classification_report(all_labels, all_preds, target_names=class_names, output_dict=True)
+    print("\n  Classification Report:")
+    print(classification_report(all_labels, all_preds, target_names=class_names)) # For console
+    
+    cm = confusion_matrix(all_labels, all_preds)
+    print("\n  Confusion Matrix:")
+    print(cm)
+
+    if writer and global_step is not None: # global_step might be epoch or an arbitrary step
+        writer.add_scalar(f'Eval/{eval_name}/Loss', avg_loss, global_step)
+        writer.add_scalar(f'Eval/{eval_name}/Accuracy', accuracy, global_step)
+        for class_label in class_names:
+            writer.add_scalar(f'Eval/{eval_name}/Precision_{class_label}', report[class_label]['precision'], global_step)
+            writer.add_scalar(f'Eval/{eval_name}/Recall_{class_label}', report[class_label]['recall'], global_step)
+            writer.add_scalar(f'Eval/{eval_name}/F1-score_{class_label}', report[class_label]['f1-score'], global_step)
+
+    if generate_plots:
+        # Plot Confusion Matrix
+        plt.figure(figsize=(8, 6))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=class_names, yticklabels=class_names)
+        plt.title(f'Confusion Matrix - {eval_name}')
+        plt.xlabel('Predicted Label')
+        plt.ylabel('True Label')
+        cm_filename = plots_dir / f"confusion_matrix_{eval_name.lower().replace(' ', '_').replace('(', '').replace(')', '')}.png"
+        plt.savefig(cm_filename)
+        plt.close()
+        print(f"Confusion matrix plot saved to {cm_filename}")
+
+        # Plot ROC Curve (for binary or one-vs-rest)
+        # Assuming binary classification, positive class is 'ai' (index 1 usually)
+        if len(class_names) == 2: # Binary case
+            # Use probabilities of the positive class (e.g., 'ai')
+            # Ensure class_to_idx aligns, typically 'ai' is 0 and 'nature' is 1 or vice-versa.
+            # Let's find the index of the 'ai' class, assuming it's the positive class.
+            positive_class_label = 'ai' # This might need to be configurable
+            if positive_class_label not in data_loader.dataset.class_to_idx:
+                print(f"Warning: Positive class '{positive_class_label}' for ROC not found in dataset classes. ROC curve will not be generated.")
+            else:
+                positive_class_idx = data_loader.dataset.class_to_idx[positive_class_label]
+                
+                # all_probs is a list of [prob_class0, prob_class1, ...] arrays
+                # We need the probability of the positive class for each sample
+                y_probs = np.array(all_probs)[:, positive_class_idx]
+                
+                fpr, tpr, thresholds = roc_curve(all_labels, y_probs, pos_label=positive_class_idx)
+                roc_auc = roc_auc_score(all_labels, y_probs)
+
+                plt.figure(figsize=(8,6))
+                plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (area = {roc_auc:.2f})')
+                plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+                plt.xlim([0.0, 1.0])
+                plt.ylim([0.0, 1.05])
+                plt.xlabel('False Positive Rate')
+                plt.ylabel('True Positive Rate')
+                plt.title(f'Receiver Operating Characteristic - {eval_name}')
+                plt.legend(loc="lower right")
+                roc_filename = plots_dir / f"roc_curve_{eval_name.lower().replace(' ', '_').replace('(', '').replace(')', '')}.png"
+                plt.savefig(roc_filename)
+                plt.close()
+                print(f"ROC curve plot saved to {roc_filename}")
+        else: # Multiclass ROC is more complex, skip for now or implement one-vs-rest
+            print("ROC curve generation is currently supported for binary classification only.")
+
+
     return accuracy, avg_loss
 
 def main(config_path):
@@ -330,6 +574,9 @@ def main(config_path):
     if eval_config.get('generate_gradcam', False):
         try:
             target_layer_name = model_config.get('gradcam_target_layer', eval_config.get('gradcam_layer_name', 'backbone.layer4'))
+            # Ensure the model is on the correct device before GradCAM initialization,
+            # as hooks might be registered to specific device parameters.
+            model.to(device) # Redundant if already done, but ensures consistency
             grad_cam_instance = GradCAM(model, target_layer_name)
             print(f"GradCAM initialized for layer: {target_layer_name}")
         except AttributeError as e: # More specific exception for layer not found
