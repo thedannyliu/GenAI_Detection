@@ -96,3 +96,30 @@ While the current focus is zero-shot, the loaded `self.model` within each wrappe
 - More complex inference strategies.
 
 Refer to the main `src/models/README.md` for how these VLM wrappers fit into the broader model ecosystem of this project, including fine-tuning and PEFT approaches which might leverage other files like `src/models/vlm_models.py`. 
+
+Located in `src.models.vlm.instruct_blip_model`.
+```python
+from src.models.vlm.instruct_blip_model import InstructBlipModelWrapper
+from PIL import Image
+
+instruct_blip_config = {
+    "model_id": "Salesforce/instructblip-vicuna-7b",
+    "instructblip_question": "Is this image a 'real photograph' or an 'AI-generated image'? Please answer with only one of these exact phrases.", # Example specific question
+    "max_new_tokens": 50
+}
+instruct_blip_vlm = InstructBlipModelWrapper(model_name="InstructBLIP", config=instruct_blip_config)
+
+img = Image.open("path/to/your/image.jpg")
+# text_prompts are defined by the prompt_strategy, e.g., ["a real photograph", "an AI-generated image", ...]
+# The wrapper's predict method will internally use its configured question and match the VLM's textual answer 
+# (e.g., "real photograph" or "ai generated") against expected phrases.
+# It then assigns scores (1.0 or 0.0) to the corresponding categories in text_prompts.
+# If the VLM's answer does not match expected phrases, all scores will be 0.0,
+# potentially leading to a fallback label (e.g., 2 for 'unknown') in the evaluation script,
+# depending on the prompt_strategy's 'default_label_if_no_match' configuration.
+scores = instruct_blip_vlm.predict(img, text_prompts) # text_prompts would be supplied by the calling script
+print(scores) # Example: {'a real photograph': 1.0, 'an authentic image': 1.0, ..., 'an AI-generated image': 0.0, ...}
+```
+
+#### LlavaModelWrapper
+// ... existing code ... 

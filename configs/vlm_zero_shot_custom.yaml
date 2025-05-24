@@ -1,7 +1,7 @@
 # Configuration for Zero-Shot VLM Evaluation
 
 # GPU for evaluation (e.g., 0, 1, 2, 3). Set to null or remove for default/CPU.
-eval_gpu_id: 0 # USER NEEDS TO CHANGE THIS TO A VALID A100 GPU ID (e.g., 0)
+eval_gpu_id: 2 # USER NEEDS TO CHANGE THIS TO A VALID A100 GPU ID (e.g., 0)
 random_seed: 42 # Seed for random number generators to ensure reproducibility
 
 batch_size: 1 # VLMs typically process one image at a time for zero-shot with PIL inputs
@@ -17,7 +17,7 @@ dataset:
   # Using imagenet_ai_0419_sdv4 for stable_diffusion_v1_4 based on previous check
   root_dir: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0419_sdv4/"
   eval_split: "val" # or "test" if available. GenImageDataset expects "train" or "val"
-  num_samples_eval: 30 # Number of samples to randomly evaluate from the dataset. Set to null or remove to use all.
+  num_samples_eval: 1000 # Number of samples to randomly evaluate from the dataset. Set to null or remove to use all.
   class_to_idx: # Should match the dataset's structure and desired labels
     nature: 0 # Real image
     ai: 1     # AI-generated image
@@ -52,8 +52,9 @@ vlm:
         params:
           model_name: "InstructBLIP-Vicuna-7B"
           config:
-            model_id: "Salesforce/instructblip-vicuna-7b"
+            model_id: "Salesforce/instructblip-vicuna-7B"
             max_new_tokens: 50
+            instructblip_question: "Is this image a 'real photograph' or an 'AI-generated image'? Please answer with only one of these exact phrases."
 
     # - name: "LLaVA-1.5-7B-HF"
     #   model_config:
@@ -87,7 +88,7 @@ vlm:
           "ai-generated image": 1
           "computer-generated": 1 
           "synthetic image": 1
+        default_label_if_no_match: 2
 
 # Tie-breaking and default labels for generative VLM predictions
 tie_breaking_label_for_generative: 1 
-default_label_for_generative_no_match: 1 

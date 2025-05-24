@@ -83,34 +83,83 @@ def evaluate_predictions(all_predictions, all_labels, model_name_unique, prompt_
         print(f"Mismatch in predictions/labels count for {model_name_unique}. Skipping metrics.")
         metrics = {"accuracy": 0, "num_samples": 0, "error": "Mismatch in prediction/label count."}
     else:
-        predictions_arr = np.array(all_predictions)
-        labels_arr = np.array(all_labels)
+        predictions_arr_orig = np.array(all_predictions)
+        labels_arr_orig = np.array(all_labels)
 
-        # print(f"Debug - Model: {model_name_unique}")
-        # print(f"Debug: Unique predicted labels in evaluate_predictions: {np.unique(predictions_arr, return_counts=True)}")
-        # print(f"Debug: True labels in evaluate_predictions ({len(labels_arr)} total): {np.unique(labels_arr, return_counts=True)}")
+        # Count and report samples predicted as class 2 (unknown/unclassified)
+        unknown_predictions_count = np.sum(predictions_arr_orig == 2)
+        metrics = {
+            "num_total_samples": int(len(labels_arr_orig)), 
+            "num_unknown_predictions": int(unknown_predictions_count)
+        }
 
-    accuracy = np.mean(predictions_arr == labels_arr)
-    metrics = {"accuracy": accuracy, "num_samples": len(labels_arr)}
-    try:
-        from sklearn.metrics import classification_report
-        report = classification_report(labels_arr, predictions_arr, target_names=class_names_for_eval, output_dict=True, zero_division=0)
-        metrics["classification_report"] = report
-        # Ensure class_names_for_eval[LABEL_REAL] and class_names_for_eval[LABEL_AI] correctly access the report keys
-        if class_names_for_eval[LABEL_REAL] in report and class_names_for_eval[LABEL_AI] in report:
-            metrics["precision_real"] = report[class_names_for_eval[LABEL_REAL]].get("precision", 0)
-            metrics["recall_real"] = report[class_names_for_eval[LABEL_REAL]].get("recall", 0)
-            metrics["f1_real"] = report[class_names_for_eval[LABEL_REAL]].get("f1-score", 0)
-            metrics["precision_ai"] = report[class_names_for_eval[LABEL_AI]].get("precision", 0)
-            metrics["recall_ai"] = report[class_names_for_eval[LABEL_AI]].get("recall", 0)
-            metrics["f1_ai"] = report[class_names_for_eval[LABEL_AI]].get("f1-score", 0)
+        # Filter out predictions and labels that are 2 for standard classification metrics
+        mask_known = (predictions_arr_orig != 2) & (labels_arr_orig != 2) # Also filter labels if they could be 2
+        # Actually, for zero-shot, true labels (labels_arr_orig) should only be 0 or 1.
+        # We only expect predictions_arr_orig to potentially contain 2.
+        mask_for_report = (labels_arr_orig != 2) # Should always be true for true labels 0 or 1
+        
+        # We evaluate metrics on samples where prediction was 0 or 1.
+        # If a prediction is 2, it's an "unable to classify" case from our side.
+        # The accuracy should reflect how well it did on the N-unknown_predictions_count samples.
+        
+        # Let's define "effective" predictions/labels as those not predicted as 2
+        predictions_arr_eff = predictions_arr_orig[predictions_arr_orig != 2]
+        labels_arr_eff = labels_arr_orig[predictions_arr_orig != 2] # Match the filtering
+
+        if len(labels_arr_eff) > 0:
+            accuracy_eff = np.mean(predictions_arr_eff == labels_arr_eff)
+            metrics["accuracy_on_classified"] = float(accuracy_eff) # np.mean can return np.float64
+            metrics["num_classified_samples"] = int(len(labels_arr_eff))
+
+            # For classification report, use only the effectively classified samples
+            # Ensure that the labels_arr_eff and predictions_arr_eff are what classification_report expects
+            # (i.e., containing only labels 0 and 1 if class_names_for_eval is for 0 and 1)
+            try:
+                from sklearn.metrics import classification_report
+                # Filter out any 2s from predictions if they somehow slipped through for the report against 0,1 labels
+                report_predictions = predictions_arr_eff[np.isin(predictions_arr_eff, [LABEL_REAL, LABEL_AI])]
+                report_labels = labels_arr_eff[np.isin(predictions_arr_eff, [LABEL_REAL, LABEL_AI])] # Match filtering based on predictions
+
+                if len(report_labels) > 0:
+                    report = classification_report(report_labels, report_predictions, target_names=class_names_for_eval, output_dict=True, zero_division=0)
+                    metrics["classification_report"] = report
+                    if class_names_for_eval[LABEL_REAL] in report and class_names_for_eval[LABEL_AI] in report:
+                        metrics["precision_real"] = report[class_names_for_eval[LABEL_REAL]].get("precision", 0)
+                        metrics["recall_real"] = report[class_names_for_eval[LABEL_REAL]].get("recall", 0)
+                        metrics["f1_real"] = report[class_names_for_eval[LABEL_REAL]].get("f1-score", 0)
+                        metrics["precision_ai"] = report[class_names_for_eval[LABEL_AI]].get("precision", 0)
+                        metrics["recall_ai"] = report[class_names_for_eval[LABEL_AI]].get("recall", 0)
+                        metrics["f1_ai"] = report[class_names_for_eval[LABEL_AI]].get("f1-score", 0)
+
+                    # Calculate and add confusion matrix for classified samples
+                    try:
+                        from sklearn.metrics import confusion_matrix
+                        cm = confusion_matrix(report_labels, report_predictions, labels=[LABEL_REAL, LABEL_AI])
+                        metrics["confusion_matrix_classified_0_1"] = cm.tolist() # Convert numpy array to list for JSON
+                    except Exception as e_cm:
+                        print(f"Error generating confusion matrix for {model_name_unique}: {e_cm}")
+                        metrics["confusion_matrix_classified_0_1"] = "Error generating confusion matrix."
+                else:
+                    print(f"Warning: No samples left for classification report after filtering for model {model_name_unique}.")
+                    metrics["classification_report"] = "No samples for report after filtering."
+
+            except ImportError:
+                print("scikit-learn not installed. Skipping classification report.")
+            except Exception as e:
+                print(f"Error generating classification report for {model_name_unique}: {e}")
         else:
-            print(f"Warning: Class names for report ({class_names_for_eval[LABEL_REAL]}, {class_names_for_eval[LABEL_AI]}) not found in classification_report keys: {list(report.keys())}")
-    except ImportError:
-        print("scikit-learn not installed. Skipping classification report.")
-    except Exception as e:
-        print(f"Error generating classification report for {model_name_unique}: {e}")
-    
+            print(f"Warning: No samples classified as 0 or 1 for model {model_name_unique}. Accuracy is 0.")
+            metrics["accuracy_on_classified"] = 0.0
+            metrics["num_classified_samples"] = 0
+        
+        # Overall accuracy (counting 2 as incorrect) - this might be too harsh if 2 means "don't know"
+        # For now, let's keep accuracy_on_classified as the primary accuracy.
+        # We can add another accuracy: (correct_0_1_predictions) / total_samples
+        correct_0_1_predictions_val = np.sum(predictions_arr_orig[labels_arr_orig != 2] == labels_arr_orig[labels_arr_orig != 2])
+        metrics["accuracy_overall_vs_total"] = float(correct_0_1_predictions_val / len(labels_arr_orig)) if len(labels_arr_orig) > 0 else 0.0
+        metrics["num_correctly_classified_0_1"] = int(correct_0_1_predictions_val) # Add this for clarity
+
     # Save metrics
     metrics_filename = os.path.join(model_specific_output_dir, f"metrics_{model_name_unique}.json")
     with open(metrics_filename, 'w') as f:
