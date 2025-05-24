@@ -80,7 +80,7 @@ class GenImageDataset(Dataset):
                 candidate_images.extend(random.sample(potential_image_files, self.num_samples_per_class))
             else:
                 candidate_images.extend(potential_image_files)
-                if self.num_samples_per_class: # and len < num_samples_per_class
+                if self.num_samples_per_class and len(potential_image_files) < self.num_samples_per_class:
                      print(f"Warning: For class '{class_name}' in '{class_root_dir}', wanted {self.num_samples_per_class} samples, but only found {len(potential_image_files)} (after exclusions). Using all available.")
             
             self.image_paths.extend(candidate_images)

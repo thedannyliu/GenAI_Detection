@@ -77,13 +77,13 @@ A sample configuration is provided in `configs/cnn_baseline.yaml`.
 python src/training/train_cnn.py --config configs/cnn_baseline.yaml
 ```
 
-Before running, ensure that `configs/cnn_baseline.yaml` is configured correctly, especially the following fields:
-- `general.output_dir`: Directory to save model checkpoints and training logs.
-- `general.gpu_id`: GPU to use for training.
-- `data.base_data_dir`: Root directory containing `train` and `val` subfolders for the dataset (e.g., `/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0419_sdv4/`).
-- `data.train_samples_per_class`, `data.val_samples_per_class`, `data.test_samples_per_class`: Should be set to 5000, 500, and 500 respectively for the 10k/1k/1k split.
-- `model.*`: Model architecture settings (type, pretrained, freeze_backbone, etc.).
-- `training.*`: Training hyperparameters (epochs, batch_size, optimizer, learning_rate, early_stopping, etc.).
+Before running, ensure that `configs/cnn_baseline.yaml` is configured correctly. Key sections in the YAML include:
+- `general`: 
+    - `output_dir`: Base directory for all experiment outputs (e.g., `results/cnn_base_runs`). A sub-directory named after `model.name` will be automatically created here to store all artifacts for a specific run (e.g., `results/cnn_base_runs/resnet50_experiment1/`).
+    - `seed`: Random seed for reproducibility.
+    - `gpu_id`: Specific GPU ID to use for training.
+- `model`: Architecture settings like `type`, `name` (this name also defines the output subfolder), `pretrained`, `freeze_backbone`, `num_classes`.
+- `data`: `base_data_dir` (e.g., `/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0419_sdv4/`), `batch_size`, `num_workers`, and sample counts (`train_samples_per_class`, `val_samples_per_class`, `test_samples_per_class` for the 10k/1k/1k split).
 
 This script now supports loading all configurations from the YAML file, saves both the best and last model weights, and includes early stopping.
 

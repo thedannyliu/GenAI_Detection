@@ -1,81 +1,97 @@
 # Configuration for CNN baseline model (ResNet-50)
 
 # General settings
-output_dir: "results/cnn_baseline"
-seed: 42
+general:
+  output_dir: "results/cnn_output_base" # Base directory for all outputs. A subfolder named after model.name will be created here.
+  seed: 42
+  gpu_id: 0 # Specify the GPU ID to use (e.g., 0, 1). Ensure this GPU is available.
 
 # Model settings
 model:
   type: "resnet"
-  name: "resnet50"  # Options: "resnet18", "resnet34", "resnet50", "resnet101"
+  name: "resnet50_run1"  # This name will be used for the output subfolder, e.g., resnet50_run1
   pretrained: true  # Use ImageNet pretrained weights
   freeze_backbone: false  # Train the entire model
   num_classes: 2
 
 # Data settings
 data:
-  batch_size: 64
-  num_workers: 4
-  
-  # Data augmentation for CNNs
-  augmentation: "heavy"  # CNNs benefit from stronger augmentation
-  
-  # Since we're training from scratch or fine-tuning everything,
-  # we might need more data than for VLM fine-tuning
-  use_subset: false
+  base_data_dir: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0419_sdv4/"
+  train_samples_per_class: 5000 # For 10k total train images
+  val_samples_per_class: 500    # For 1k total val images
+  test_samples_per_class: 500   # For 1k total test images
+  batch_size: 64 # Adjusted from 64 due to previous discussion, can be tuned
+  num_workers: 8
+  augmentation: "default" # Placeholder, current script uses default GenImageDataset transforms
+  # use_subset: false # This key is not currently used by train_cnn.py, can be kept for future or removed
 
 # Training settings
 training:
   # Optimization - CNNs often use SGD with momentum
-  optimizer: "sgd"  # Options: "sgd", "adam", "adamw" 
-  learning_rate: 0.01  # Higher initial LR for SGD
-  weight_decay: 5e-4
-  momentum: 0.9
+  optimizer: "adam"  # Options: "sgd", "adam", "adamw"
+  learning_rate: 1e-4
+  weight_decay: 1e-5
+  # momentum: 0.9 # Only for SGD
   
   # Scheduler - step LR is common for CNNs
-  scheduler: "step"
-  step_size: 10
-  gamma: 0.1
+  scheduler:
+    type: "step" 
+    step_size: 15
+    gamma: 0.1
   
   # Training loop
-  num_epochs: 30  # CNNs typically need more epochs
-  mixed_precision: true
+  num_epochs: 2 # Adjusted from 2000 for a more reasonable starting point
   
   # Checkpointing
-  checkpoint_dir: "results/cnn_baseline/saved_models"
-  save_frequency: 5
-  save_best_only: true
+  checkpoint_dir: "checkpoints" # Relative to general.output_dir / model.name
+  # save_frequency: 10 # Not directly used; best and last are saved
+  # save_best_only: true # Not directly used; best and last are saved
   
   # Early stopping
-  early_stopping: true
-  patience: 5
+  early_stopping:
+    enabled: true
+    patience: 30 
+    metric: "val_acc"
+    min_delta: 0.001 
   
   # Logging
-  log_frequency: 20
+  log_frequency: 50
   use_tensorboard: true
 
 # Evaluation settings
 evaluation:
   # Metrics
-  metrics:
-    - accuracy
-    - auc
-    - precision
-    - recall
-    - f1
+  # metrics:
+  #   - accuracy
+  #   - auc
+  #   - precision
+  #   - recall
+  #   - f1
   
   # Visualization
   generate_plots: true
-  plot_dir: "results/cnn_baseline/figures"
+  plot_dir: "evaluation_plots" # Relative to general.output_dir / model.name
   
   # Explainability
   generate_gradcam: true
-  num_gradcam_samples: 16
-  gradcam_layer: "layer4"  # Last ResNet layer
-  
-  # Compare with VLMs
-  compare_with_vlm: true
-  vlm_checkpoint: "results/fine_tuned/saved_models/best_model.pth"
+  num_gradcam_samples: 8
+  gradcam_layer_name: "backbone.layer4.2" # Example, ensure this layer name is correct for your model
   
   # Cross-generator evaluation (important for baseline comparison)
-  evaluate_on_all_generators: true 
+  # evaluate_on_all_generators: false 
+
+# Optional: External evaluation on a different dataset after training
+external_evaluation: # This entire section was missing from the provided file content, adding it back
+  enabled: false
+  name: "external_test_set_example"
+  data:
+    base_data_dir: "/path/to/your/external_dataset_root_dir/" # IMPORTANT: Change this path if enabled
+    split: "test"
+    num_samples_per_class: 200 
+    # class_to_idx: {"real": 0, "fake": 1}
+
+# Removed (from previous user file content, but were meant to be removed earlier):
+# evaluate_on_all_generators: false 
+# gradcam_layer: "layer4" # Replaced by gradcam_layer_name
+# augmentation: "heavy" # Replaced by default as transforms are not yet configurable via YAML
+# use_subset: false # Not used 
