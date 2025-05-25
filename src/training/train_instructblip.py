@@ -471,8 +471,9 @@ def main():
         model_config['name_pretrained'],
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
-        device_map={"": device}  # This ensures model loads directly to our device
+        device_map={"" : device}  # This ensures model loads directly to our device
     )
+    model.config.use_cache = False # Prevent DynamicCache issues during evaluation
     
     # Setup LoRA
     if model_config['finetune_method'] == 'lora':
