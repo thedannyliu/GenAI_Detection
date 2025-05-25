@@ -1,0 +1,29 @@
+general:
+  seed: 42
+  gpu_id: 2
+
+model:
+  path: "results/cnn_output_base/resnet50_run1/checkpoints/best_model.pth"
+  num_classes: 2
+
+evaluation:
+  num_samples_per_folder: 500
+  output_base_dir: "results/cnn_evaluations/" # Base directory for saving evaluation results
+  # Define the datasets to evaluate
+  # ai_label and nature_label map to class indices (e.g., 0 for nature/real, 1 for ai/fake)
+  datasets:
+    - name: "ImageNet-WuKong (Val)"
+      ai_path: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0424_wukong/val/ai/"
+      nature_path: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0424_wukong/val/nature/"
+      ai_label: 1
+      nature_label: 0
+    - name: "ImageNet-GLIDE (Val)"
+      ai_path: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_glide/val/ai/"
+      nature_path: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_glide/val/nature/"
+      ai_label: 1
+      nature_label: 0
+    - name: "Chameleon (Test)"
+      ai_path: "/raid/dannyliu/dataset/GAI_Dataset/Chameleon/test/1_fake/" # Corresponds to 'ai'
+      nature_path: "/raid/dannyliu/dataset/GAI_Dataset/Chameleon/test/0_real/" # Corresponds to 'nature'
+      ai_label: 1 
+      nature_label: 0 

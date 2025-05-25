@@ -271,3 +271,29 @@ for name, loader in datasets.items():
 - Enable mixed precision during evaluation for faster inference
 - Save detailed results for later analysis and visualization
 - Use standardized seeds for reproducibility in evaluation 
+
+### Inference with Trained CNN Model (New)
+
+To perform inference using a previously trained CNN model (e.g., `best_model.pth` from a `train_cnn.py` run) on different datasets, you can use the `src/inference.py` script. This script loads the specified model and evaluates it on user-defined image folders, sampling a specified number of images from each.
+
+**Usage:**
+
+```bash
+python src/evaluation/eval_cnn.py [OPTIONS]
+```
+
+**Key Options:**
+
+*   `--model_path`: Path to the trained CNN model file (e.g., `results/cnn_output_base/resnet50_run1/checkpoints/best_model.pth`). Defaults to this path.
+*   `--num_samples_per_folder`: Number of images to randomly sample from each subfolder (e.g., 'ai', 'nature', '1_fake', '0_real'). Defaults to 500.
+*   `--seed`: Global random seed for reproducibility of image sampling. Defaults to 42.
+*   `--gpu_id`: GPU ID to use for inference if CUDA is available (e.g., 0, 1). Defaults to 0.
+
+The script is pre-configured to evaluate on the following dataset structures:
+1.  `/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0424_wukong/val/ai/` and `/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0424_wukong/val/nature/`
+2.  `/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_glide/val/ai/` and `/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_glide/val/nature/`
+3.  `/raid/dannyliu/dataset/GAI_Dataset/Chameleon/test/0_real/` and `/raid/dannyliu/dataset/GAI_Dataset/Chameleon/test/1_fake/`
+
+To use different datasets, you will need to modify the `datasets_to_evaluate` list within the `src/inference.py` script directly.
+
+The script will output the accuracy for each subfolder, each dataset, and an overall accuracy across all processed images.

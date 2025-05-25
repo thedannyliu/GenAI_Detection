@@ -143,6 +143,36 @@ For more flexible zero-shot evaluation of various VLMs (CLIP, BLIP, InstructBLIP
     Replace `configs/vlm_zero_shot_custom.yaml` with the path to your specific configuration file.
     Results, including detailed metrics and raw predictions, will be saved to the specified `output_dir`.
 
+### Evaluating a Trained CNN Model (New)
+
+To evaluate a previously trained CNN model (e.g., `best_model.pth` from a `train_cnn.py` run) on various datasets, use the `src/evaluation/eval_cnn.py` script. This script loads the model and evaluation parameters from a YAML configuration file.
+
+**1. Prepare your configuration file:**
+
+Copy the example configuration `configs/eval_cnn_config.yaml` or create a new one. This file allows you to specify:
+*   `general.seed`: Global random seed for reproducibility.
+*   `general.gpu_id`: GPU ID to use for inference.
+*   `model.path`: Path to the trained CNN model file (e.g., `results/cnn_output_base/resnet50_run1/checkpoints/best_model.pth`).
+*   `model.num_classes`: Number of classes for the model.
+*   `evaluation.num_samples_per_folder`: Number of images to randomly sample from each subfolder.
+*   `evaluation.datasets`: A list of datasets to evaluate. Each dataset entry should include:
+    *   `name`: A descriptive name for the dataset.
+    *   `ai_path`: Path to the folder containing AI-generated or fake images.
+    *   `nature_path`: Path to the folder containing real or nature images.
+    *   `ai_label`: The integer label corresponding to AI/fake images (e.g., 1).
+    *   `nature_label`: The integer label corresponding to real/nature images (e.g., 0).
+
+Example dataset entries are provided in `configs/eval_cnn_config.yaml` for ImageNet-WuKong, ImageNet-GLIDE, and Chameleon datasets.
+
+**2. Run the evaluation script:**
+
+```bash
+python src/evaluation/eval_cnn.py --config configs/your_eval_cnn_config.yaml
+```
+Replace `configs/your_eval_cnn_config.yaml` with the path to your actual configuration file.
+
+The script will output the accuracy for each subfolder, each dataset specified in the config, and an overall accuracy across all processed images.
+
 ### Running Tests
 
 ```bash
