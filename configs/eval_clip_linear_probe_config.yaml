@@ -2,7 +2,7 @@
 
 general:
   seed: 42
-  gpu_id: 0 # GPU for evaluation
+  gpu_id: 2 # GPU for evaluation
   output_base_dir: "results/clip_linear_probe_evaluations/" # Base directory for saving evaluation results
 
 # Model to evaluate
@@ -10,7 +10,7 @@ model:
   # Path to the trained linear classifier state_dict (.pth file)
   # This path will come from the output of the clip_linear_probe_train.py script
   # Example: "results/clip_linear_probe/clip_L14_linear_probe_sdv4_YYYYMMDD_HHMMSS/best_linear_classifier.pth"
-  linear_classifier_path: "YOUR_TRAINED_CLASSIFIER_PATH_HERE" 
+  linear_classifier_path: "/raid/dannyliu/GAI_Detection/GenAI_Detection/results/clip_linear_probe/clip_linear_probe_run_20250526_012534/best_linear_classifier.pth" 
   
   clip_model_id: "openai/clip-vit-large-patch14" # CLIP model used for extracting embeddings (must match training)
   

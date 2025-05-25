@@ -75,24 +75,31 @@ def load_models_and_processor(
     device: torch.device
 ) -> Tuple[CLIPModel, CLIPProcessor, LinearClassifier]:
     print(f"Loading CLIP model: {clip_model_id}")
-    processor = CLIPProcessor.from_pretrained(clip_model_id)
-    clip_model = CLIPModel.from_pretrained(clip_model_id).to(device)
-    clip_model.eval()
-    for param in clip_model.parameters():
-        param.requires_grad = False # Ensure CLIP is frozen
+    clip_processor = CLIPProcessor.from_pretrained(clip_model_id)
+    clip_model_for_eval = CLIPModel.from_pretrained(clip_model_id).to(device)
+    clip_model_for_eval.eval() # Freeze all CLIP model parameters
+    for param in clip_model_for_eval.parameters():
+        param.requires_grad = False
     print("CLIP model loaded and frozen.")
 
+    # Determine embedding dimension correctly from projection_dim
+    actual_embedding_dim = clip_model_for_eval.config.projection_dim
+
+    classifier_path = classifier_path
+    classifier_arch_cfg = classifier_config
+
     print(f"Loading Linear Classifier from: {classifier_path}")
+    # Ensure this local definition matches the one used in training if parameters are to be compatible
     linear_classifier = LinearClassifier(
-        embedding_dim=embedding_dim,
-        hidden_dims=classifier_config.get('hidden_dims', []),
-        num_classes=classifier_config.get('num_classes', 2),
-        # dropout_rate is not used during eval, but good to match architecture if defined
+        embedding_dim=actual_embedding_dim, # Use the correct dimension
+        hidden_dims=classifier_arch_cfg.get('hidden_dims', []),
+        num_classes=classifier_arch_cfg['num_classes'],
+        dropout_rate=classifier_arch_cfg.get('dropout', 0.0)
     ).to(device)
     linear_classifier.load_state_dict(torch.load(classifier_path, map_location=device))
     linear_classifier.eval()
     print("Linear Classifier loaded.")
-    return clip_model, processor, linear_classifier
+    return clip_model_for_eval, clip_processor, linear_classifier
 
 def infer_on_dataset(
     dataset_config: Dict,
