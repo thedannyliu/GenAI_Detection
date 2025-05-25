@@ -1,0 +1,56 @@
+# Configuration for Evaluating Fine-tuned CLIP Linear Probe on Various Datasets
+
+general:
+  seed: 42
+  gpu_id: 0 # GPU for evaluation
+  output_base_dir: "results/clip_linear_probe_evaluations/" # Base directory for saving evaluation results
+
+# Model to evaluate
+model:
+  # Path to the trained linear classifier state_dict (.pth file)
+  # This path will come from the output of the clip_linear_probe_train.py script
+  # Example: "results/clip_linear_probe/clip_L14_linear_probe_sdv4_YYYYMMDD_HHMMSS/best_linear_classifier.pth"
+  linear_classifier_path: "YOUR_TRAINED_CLASSIFIER_PATH_HERE" 
+  
+  clip_model_id: "openai/clip-vit-large-patch14" # CLIP model used for extracting embeddings (must match training)
+  
+  # Classifier architecture (must match the saved linear_classifier_path)
+  # embedding_dim will be inferred from clip_model_id
+  classifier_config:
+    hidden_dims: [] # Example: [] for simple linear, [256] for one hidden layer
+    num_classes: 2  # Should match the trained classifier
+
+evaluation:
+  num_samples_per_folder: 500 # Number of samples to randomly evaluate from each ai/nature folder. Set to null or remove to use all.
+  batch_size_embed_extraction: 32 # Batch size for extracting CLIP embeddings during evaluation
+  batch_size_classifier_inference: 128 # Batch size for classifier inference
+
+  # Define the datasets to evaluate
+  # ai_label and nature_label map to class indices (e.g., 0 for nature/real, 1 for ai/fake)
+  # These should align with how the linear classifier was trained (e.g., nature:0, ai:1)
+  datasets:
+    - name: "ImageNet-SDv4 (Val)" # The original validation/test set used in training
+      ai_path: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0419_sdv4/val/ai/"
+      nature_path: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0419_sdv4/val/nature/"
+      ai_label: 1
+      nature_label: 0
+      # If this is the same as the test set for training, ensure num_samples_per_folder 
+      # and seed yield a different or full sample if desired.
+
+    - name: "ImageNet-WuKong (Val)"
+      ai_path: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0424_wukong/val/ai/"
+      nature_path: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0424_wukong/val/nature/"
+      ai_label: 1
+      nature_label: 0
+      
+    - name: "ImageNet-GLIDE (Val)"
+      ai_path: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_glide/val/ai/"
+      nature_path: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_glide/val/nature/"
+      ai_label: 1
+      nature_label: 0
+      
+    - name: "Chameleon (Test)" # Example of a different dataset structure
+      ai_path: "/raid/dannyliu/dataset/GAI_Dataset/Chameleon/test/1_fake/" 
+      nature_path: "/raid/dannyliu/dataset/GAI_Dataset/Chameleon/test/0_real/" 
+      ai_label: 1 
+      nature_label: 0 

@@ -89,4 +89,8 @@ If you encounter an error message similar to `TypeError: default_collate: batch 
 
 This section has been moved and expanded in `src/prompts/README.md`. Please refer to that file for detailed guidance on configuring `prompt_to_class_map` in your YAML files, especially when using `GenImageDetectPrompts`.
 
-If you see warnings about prompts not being found in the map during the execution of `zero_shot_vlm_eval.py`, it means the `prompt_to_class_map` in your experiment's YAML configuration is incomplete. You should update the YAML to include all possible prompts that your VLM might select, along with their corresponding class labels (e.g., 0 for real, 1 for AI). 
+If you see warnings about prompts not being found in the map during the execution of `zero_shot_vlm_eval.py`, it means the `prompt_to_class_map` in your experiment's YAML configuration is incomplete. You should update the YAML to include all possible prompts that your VLM might select, along with their corresponding class labels (e.g., 0 for real, 1 for AI).
+
+---
+
+*More experiment details can be added here as the project evolves.* 

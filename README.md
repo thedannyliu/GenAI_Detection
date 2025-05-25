@@ -26,8 +26,15 @@ project-root/
 ├── docs/                           <- Documentation
 ├── notebooks/                      <- Jupyter notebooks
 ├── results/                        <- Experiment outputs
-├── src/                            <- Source code
-└── tests/                          <- Test suite
+├── src/
+│   ├── data_processing/    # Scripts for dataset handling, preprocessing, augmentation
+│   ├── evaluation/         # Scripts for evaluating trained models
+│   ├── experiments/        # Main zero-shot experiment scripts (and older/other experiments)
+│   ├── models/             # Model definitions (CNNs, VLMs wrappers, etc.)
+│   ├── prompts/            # Prompt engineering strategies and definitions
+│   ├── training/           # Scripts for model training (e.g. CNNs, VLM fine-tuning, linear probes)
+│   └── utils/              # Utility functions (config loading, logging, etc.)
+├── tests/                          <- Test suite
 ```
 
 ## Setup Instructions
@@ -61,117 +68,71 @@ project-root/
 
 **For VLM Models (Fine-tuning InstructBLIP):**
 
-To fine-tune an InstructBLIP model (e.g., `Salesforce/instructblip-vicuna-7b`) for AI-generated image detection, use the `train_instructblip.py` script. This script handles data preparation, LoRA or full fine-tuning, and saves model artifacts. It supports evaluation at each epoch, saving the best and recent checkpoints, and early stopping.
-
-All training parameters are managed through a YAML configuration file. A template is provided in `configs/train_instructblip_config.yaml`. You should copy and modify this file.
+To fine-tune an InstructBLIP model (e.g., `Salesforce/instructblip-vicuna-7b`) for AI-generated image detection, use the `train_instructblip.py` script.
+(Details as previously, ensure paths in `src/training/train_instructblip.py` and configs are correct)
 
 To run the training:
-1.  **Prepare your configuration file**: Copy `configs/train_instructblip_config.yaml` (e.g., to `configs/my_instructblip_vicuna_train_config.yaml`) and edit it. Key parameters include:
-    *   `data`: Paths and sample counts.
-    *   `model`: `name_pretrained` (e.g., `\"Salesforce/instructblip-vicuna-7b\"`), `finetune_method` ("lora" or "full"), and `lora_params` (ensure `target_modules` are appropriate for the chosen model if using LoRA).
-    *   `training`: `epochs` (max epochs), `batch_size`, learning rates (`learning_rate_lora` or `learning_rate_full`), `warmup_steps`. Note: For LoRA fine-tuning, some advanced `Trainer`-specific settings like `evaluation_strategy`, `save_strategy`, `save_total_limit`, `early_stopping_patience`, and `early_stopping_threshold` are now managed by a simplified manual PyTorch loop. The script will save the LoRA adapter that achieves the best validation loss (if a validation set is provided), or the final adapter otherwise. Full fine-tuning still uses the Hugging Face `Trainer` with its full capabilities.
-    *   `output`: `base_results_dir_root`.
-    *   `environment` (New): `gpu_id` (e.g., `0`, `1` for specific GPU, `-1` for CPU, or leave blank/null for auto-selection).
-
+1.  **Prepare your configuration file**: (e.g., `configs/my_instructblip_vicuna_train_config.yaml`)
 2.  **Run the training script**:
     ```bash
     python src/training/train_instructblip.py --config configs/my_instructblip_vicuna_train_config.yaml
     ```
-    Replace with your actual configuration file path.
 
-The script will create a `RUN_ID` based on the configuration. 
-    *   For LoRA fine-tuning: The **best LoRA adapter** (based on validation loss, if validation data is used) or the **final adapter** will be saved in `<output.base_results_dir_root>/<RUN_ID>/final_model_artifacts/`. The associated processor will also be saved there. Checkpoints during intermediate LoRA training epochs are not saved by default in the manual loop, unlike the `Trainer`'s behavior for full fine-tuning.
-    *   For Full fine-tuning: The **best model** (based on validation loss) will be saved in `<output.base_results_dir_root>/<RUN_ID>/final_model_artifacts/` (or directly in the `output_dir` specified to Trainer, which is typically this path for full fine-tuning). Recent checkpoints might be in a `trainer_checkpoints` subdirectory if configured, but the primary output is the best model.
-    *   Training logs for TensorBoard (if enabled and configured) will be in `<output.base_results_dir_root>/<RUN_ID>/training_logs/`. For manual LoRA, TensorBoard integration needs to be explicitly uncommented in the script.
+**For CNN-based Classification:**
 
-**For CNN-based Classification (New):**
-
-To train a ResNet50-based CNN classifier for detecting AI-generated images, use the `train_cnn.py` script with a YAML configuration file. 
-A sample configuration is provided in `configs/cnn_baseline.yaml`.
-
+To train a ResNet50-based CNN classifier, use the `train_cnn.py` script with a YAML configuration file (e.g., `configs/cnn_baseline.yaml`).
 ```bash
 python src/training/train_cnn.py --config configs/cnn_baseline.yaml
 ```
 
-Before running, ensure that `configs/cnn_baseline.yaml` is configured correctly. Key sections in the YAML include:
-- `general`: 
-    - `output_dir`: Base directory for all experiment outputs (e.g., `results/cnn_base_runs`). A sub-directory named after `model.name` will be automatically created here to store all artifacts for a specific run (e.g., `results/cnn_base_runs/resnet50_experiment1/`).
-    - `seed`: Random seed for reproducibility.
-    - `gpu_id`: Specific GPU ID to use for training.
-- `model`: Architecture settings like `type`, `name` (this name also defines the output subfolder), `pretrained`, `freeze_backbone`, `num_classes`.
-- `data`: `base_data_dir` (e.g., `/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0419_sdv4/`), `batch_size`, `num_workers`, and sample counts (`train_samples_per_class`, `val_samples_per_class`, `test_samples_per_class` for the 10k/1k/1k split).
+**For CLIP Linear Probing Training:**
 
-This script now supports loading all configurations from the YAML file, saves both the best and last model weights, and includes early stopping.
-
-### Zero-shot Evaluation
-
-```bash
-python src/main.py --config configs/vlm_zero_shot.yaml --mode eval
-```
-
-### Evaluating a Fine-tuned VLM Model (InstructBLIP)
-
-To evaluate a fine-tuned InstructBLIP model (trained using `src/training/train_instructblip.py`) on a test set, use the `eval_instructblip.py` script. This script loads the specified test data, the trained model artifacts (based on a `RUN_ID` matching the training run), performs inference, and calculates evaluation metrics.
-
-1.  **Ensure your trained model artifacts exist**: The training script saves artifacts to `results/instructblip_finetune/<RUN_ID>/final_model_artifacts/`.
-2.  **Configure `eval_instructblip.py`**: Modify the main block of `src/evaluation/eval_instructblip.py` to set the correct `RUN_ID` parameters (e.g., `FINETUNE_METHOD`, `NUM_TRAIN_SAMPLES_CONFIG`, `MODEL_NAME_PRETRAINED_CONFIG`, etc.) to match the training run you want to evaluate. This ensures the script loads the correct model and test data.
-3.  **Run the evaluation script**:
-
+This approach trains a linear classifier on top of frozen image embeddings extracted from a pre-trained CLIP model.
+1.  **Configure**: Edit `configs/clip_linear_probe_config.yaml` to set dataset paths, model ID, sampling parameters, and training settings.
+2.  **Run training script**:
     ```bash
-    python src/evaluation/eval_instructblip.py
+    python src/training/clip_linear_probe_train.py --config configs/clip_linear_probe_config.yaml
     ```
-    Evaluation results, including detailed metrics, classification reports, and confusion matrices, will be saved in a subdirectory like `results/instructblip_finetune/<RUN_ID>/evaluation_on_test_set/`.
+    This will save the best linear classifier, training history, and test set evaluation results.
 
-### Custom Zero-shot VLM Evaluation (New)
+### Evaluation
 
-For more flexible zero-shot evaluation of various VLMs (CLIP, BLIP, InstructBLIP, LLaVA, etc.) using the new extensible VLM and prompt strategy framework, use the `zero_shot_vlm_eval.py` script directly. This script allows detailed configuration of models, prompts, specific GenImage generator datasets, and output paths through a YAML configuration file.
+**Zero-shot VLM Evaluation (Custom Script):**
 
-1.  **Configure your evaluation**: 
-    Create or modify a YAML configuration file (e.g., `configs/vlm_zero_shot_custom.yaml`). Specify:
-    *   `eval_gpu_id`: GPU to use.
-    *   `dataset`: `root_dir` (path to the specific GenImage sub-dataset, e.g., `.../stable_diffusion_v_1_5/imagenet_ai_0424_sdv5/`), `eval_split`.
-    *   `vlm.model_config`: Module, class, and parameters (like `model_id` and `config` for the VLM wrapper) for the VLM to test.
-    *   `vlm.prompt_config`: Module, class, and parameters for the prompt strategy, including `prompt_to_class_map` or `keyword_to_class_map` for interpreting VLM outputs.
-    *   `output_dir`: Where to save metrics and results.
-
-    Refer to `configs/vlm_zero_shot_custom.yaml` for a detailed template.
-
-2.  **Run the evaluation script**:
+For flexible zero-shot evaluation of various VLMs (CLIP, BLIP, InstructBLIP, LLaVA, etc.):
+1.  **Configure**: Create or modify a YAML configuration file (e.g., `configs/vlm_zero_shot_custom.yaml`).
+2.  **Run evaluation script**:
     ```bash
     python src/experiments/zero_shot_vlm_eval.py --config configs/vlm_zero_shot_custom.yaml
     ```
-    Replace `configs/vlm_zero_shot_custom.yaml` with the path to your specific configuration file.
-    Results, including detailed metrics and raw predictions, will be saved to the specified `output_dir`.
 
-### Evaluating a Trained CNN Model (New)
+**Evaluating a Fine-tuned VLM Model (InstructBLIP):**
 
-To evaluate a previously trained CNN model (e.g., `best_model.pth` from a `train_cnn.py` run) on various datasets, use the `src/evaluation/eval_cnn.py` script. This script loads the model and evaluation parameters from a YAML configuration file.
+To evaluate a fine-tuned InstructBLIP model:
+1.  Ensure trained model artifacts exist.
+2.  Configure `src/evaluation/eval_instructblip.py` with the correct `RUN_ID`.
+3.  **Run evaluation script**:
+    ```bash
+    python src/evaluation/eval_instructblip.py
+    ```
 
-**1. Prepare your configuration file:**
+**Evaluating a Trained CNN Model:**
 
-Copy the example configuration `configs/eval_cnn_config.yaml` or create a new one. This file allows you to specify:
-*   `general.seed`: Global random seed for reproducibility.
-*   `general.gpu_id`: GPU ID to use for inference.
-*   `model.path`: Path to the trained CNN model file (e.g., `results/cnn_output_base/resnet50_run1/checkpoints/best_model.pth`).
-*   `model.num_classes`: Number of classes for the model.
-*   `evaluation.num_samples_per_folder`: Number of images to randomly sample from each subfolder.
-*   `evaluation.datasets`: A list of datasets to evaluate. Each dataset entry should include:
-    *   `name`: A descriptive name for the dataset.
-    *   `ai_path`: Path to the folder containing AI-generated or fake images.
-    *   `nature_path`: Path to the folder containing real or nature images.
-    *   `ai_label`: The integer label corresponding to AI/fake images (e.g., 1).
-    *   `nature_label`: The integer label corresponding to real/nature images (e.g., 0).
+1.  **Prepare configuration**: Create or modify `configs/eval_cnn_config.yaml` specifying the model path and datasets.
+2.  **Run evaluation script**:
+    ```bash
+    python src/evaluation/eval_cnn.py --config configs/your_eval_cnn_config.yaml
+    ```
 
-Example dataset entries are provided in `configs/eval_cnn_config.yaml` for ImageNet-WuKong, ImageNet-GLIDE, and Chameleon datasets.
+**Evaluating a Trained CLIP Linear Probe:**
 
-**2. Run the evaluation script:**
-
-```bash
-python src/evaluation/eval_cnn.py --config configs/your_eval_cnn_config.yaml
-```
-Replace `configs/your_eval_cnn_config.yaml` with the path to your actual configuration file.
-
-The script will output the accuracy for each subfolder, each dataset specified in the config, and an overall accuracy across all processed images.
+To evaluate a trained CLIP linear probe on various datasets:
+1.  **Update Configuration**: After running the CLIP linear probe training, note the path to the saved `best_linear_classifier.pth`. Open `configs/eval_clip_linear_probe_config.yaml` and update the `linear_classifier_path` field with this correct path.
+2.  **Configure Datasets**: Ensure the `datasets` section in `configs/eval_clip_linear_probe_config.yaml` lists all datasets you want to test against.
+3.  **Run evaluation script**:
+    ```bash
+    python src/evaluation/eval_clip_linear_probe.py --config configs/eval_clip_linear_probe_config.yaml
+    ```
 
 ### Running Tests
 
@@ -184,6 +145,9 @@ pytest
 - Detailed experiment design: `docs/experiment_plan.md`
 - Code design: `docs/code_plan.md`
 - Dataset instructions: `data/README.md`
+- Training script details: `src/training/README.md`
+- Evaluation script details: `src/evaluation/README.md`
+- Experiment (Zero-shot) script details: `src/experiments/README.md`
 
 ## Contributing
 
@@ -208,4 +172,25 @@ If you use this code in your research, please cite our work:
 
 ## Acknowledgments
 
-We thank the creators of the genimage dataset and the open-source community for their valuable contributions. 
+We thank the creators of the genimage dataset and the open-source community for their valuable contributions.
+
+## CLIP Linear Probing (Consolidated from previous duplicate content)
+
+-   **Description**: This approach involves using a pre-trained CLIP model, freezing its weights, and training only a simple linear classifier (or a shallow MLP) on top of the image embeddings extracted from CLIP. It's an efficient way to adapt powerful pre-trained models to specific tasks like AI vs. Nature image detection.
+-   **Methodology**:
+    1.  **Feature Extraction**: Use the frozen image encoder of a CLIP model (e.g., `openai/clip-vit-large-patch14`) to generate fixed-size vector embeddings for input images.
+    2.  **Classifier Training**: Train a linear classifier using these embeddings as input and the image labels (AI-generated or Nature) as targets.
+-   **Scripts**:
+    -   Training Linear Probe: `src/training/clip_linear_probe_train.py`
+        -   Configuration: `configs/clip_linear_probe_config.yaml`
+        -   This script handles data sampling, CLIP feature extraction, training the linear classifier with early stopping, and evaluating on a held-out test set.
+    -   Evaluating Trained Linear Probe: `src/evaluation/eval_clip_linear_probe.py`
+        -   Configuration: `configs/eval_clip_linear_probe_config.yaml`
+        -   This script takes the trained linear classifier and evaluates its performance on multiple, potentially different, datasets to test generalization.
+-   **Key Features**: Computationally efficient fine-tuning, leverages strong CLIP features, allows for robust evaluation across datasets.
+-   **Further Details**: See documentation within `src/training/README.md` and `src/evaluation/README.md`.
+
+*(The content below this line seems to be a duplicate from a merge or an older version and has been consolidated above or is part of the general project description. It will be removed for clarity.)*
+
+---
+*The previous detailed sections on "Available Experiments and Evaluations" and "Running Experiments" have been integrated into the main "Usage" and specific model sections above for better flow. The redundant "CLIP Linear Probing" section at the very end is also consolidated.* 

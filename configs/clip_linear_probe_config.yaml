@@ -1,0 +1,65 @@
+# Configuration for CLIP Linear Probing Training
+
+# General settings
+output_dir_base: "results/clip_linear_probe" # Base directory for outputs
+experiment_name: "clip_L14_linear_probe_sdv4" # Specific name for this experiment run
+seed: 42
+eval_gpu_id: 2 # GPU for training and evaluation. Change if necessary.
+
+# CLIP Model (Hugging Face identifier)
+clip_model_id: "openai/clip-vit-large-patch14" # Matches vlm_zero_shot_custom.yaml
+
+# Dataset Configuration
+dataset:
+  base_path: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0419_sdv4/"
+  train_ai_path: "train/ai"
+  train_nature_path: "train/nature"
+  val_ai_path: "val/ai"        # Source for validation and test sets
+  val_nature_path: "val/nature"  # Source for validation and test sets
+
+  num_train_samples_per_class: 5000
+  num_val_samples_per_class: 500   # For validation during training
+  num_test_samples_per_class: 500  # For final testing (from val_ai/nature_path, non-overlapping with num_val_samples_per_class)
+
+  # Labels
+  class_to_idx:
+    nature: 0 # Real image
+    ai: 1     # AI-generated image
+
+# DataLoader settings
+dataloader:
+  batch_size: 64   # Batch size for training the linear classifier. Adjust based on GPU memory for embeddings.
+  num_workers: 4
+
+# Linear Classifier settings
+classifier:
+  # embedding_dim will be automatically determined from the CLIP model.
+  # For CLIP-L-14, image embedding dimension is 768.
+  hidden_dims: []      # Empty list for a simple linear layer (logit = Wx + b).
+                       # For an MLP, e.g., [256] for one hidden layer with 256 units.
+  num_classes: 2       # nature vs ai
+  dropout: 0.0         # Dropout rate for the classifier's hidden layers (if any).
+
+# Training settings
+training:
+  optimizer: "adamw"
+  learning_rate: 1e-3    # Learning rate for the linear classifier. Usually can be higher than full fine-tuning.
+  weight_decay: 0.01
+  num_epochs: 2000         # Maximum number of epochs.
+  mixed_precision: true  # Use Automatic Mixed Precision (AMP) for faster training.
+
+  # Early stopping
+  early_stopping:
+    enabled: true
+    patience: 50            # Number of epochs to wait for improvement before stopping.
+    metric: "val_accuracy" # Metric to monitor on the validation set.
+    mode: "max"            # "max" for accuracy, "min" for loss.
+
+  # Logging and Saving
+  log_frequency: 10        # Log training progress every N batches.
+  save_best_model: true    # Save the model checkpoint with the best validation metric.
+  checkpoint_metric: "val_accuracy" # Metric to decide the "best" model.
+
+# Evaluation settings for the test set (run after training completion)
+evaluation:
+  batch_size: 128  # Batch size for inference on the test set. Can often be larger than training.

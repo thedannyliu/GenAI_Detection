@@ -348,4 +348,92 @@ output:
 
 environment:
   gpu_id: 0                               # Specific GPU ID, or null/negative for default
-``` 
+```
+
+# Training Scripts Readme
+
+This directory (`src/training/`) contains scripts for training various models for GenAI detection.
+
+## CNN Baseline Training (`train_cnn.py`)
+
+This script trains a Convolutional Neural Network (e.g., ResNet50) from scratch or by fine-tuning a pre-trained model on the task of distinguishing AI-generated images from real (nature) images.
+
+-   **Purpose**: To establish a baseline performance using standard CNN architectures.
+-   **Configuration**: `configs/cnn_baseline.yaml` (or a similar YAML file).
+    -   Specifies model architecture (e.g., `resnet50`), whether to use pre-trained weights, and if the backbone should be frozen initially.
+    -   Defines dataset paths (`base_data_dir`), data sampling parameters (e.g., `train_samples_per_class`, `val_samples_per_class`), batch size, and number of workers.
+    -   Includes training parameters like optimizer type, learning rate, weight decay, number of epochs, and early stopping criteria.
+    -   Specifies output directories for saving model checkpoints and logs.
+-   **Functionality**:
+    1.  Loads dataset configurations and prepares `DataLoaders` for training, validation, and (optionally) test sets.
+    2.  Initializes the specified CNN model.
+    3.  Implements a training loop with loss calculation, backpropagation, and optimizer steps.
+    4.  Performs validation at the end of each epoch.
+    5.  Supports early stopping based on validation performance.
+    6.  Saves the best model checkpoint and potentially the last model checkpoint.
+    7.  Logs training progress (e.g., to console and/or TensorBoard).
+-   **Outputs**:
+    -   Trained model checkpoints (e.g., `best_model.pth`, `last_model.pth`) saved in a run-specific subdirectory within the configured output directory.
+    -   Training logs and potentially a summary of training metrics.
+-   **Usage**:
+    ```bash
+    python src/training/train_cnn.py --config configs/cnn_baseline.yaml
+    ```
+
+## InstructBLIP Fine-tuning (`train_instructblip.py`)
+
+This script fine-tunes an InstructBLIP model (e.g., `Salesforce/instructblip-vicuna-7b`) for AI-generated image detection. It supports both LoRA (Low-Rank Adaptation) and full fine-tuning methods.
+
+-   **Purpose**: To adapt a powerful Vision-Language Model like InstructBLIP to the specific task of GenAI detection through fine-tuning.
+-   **Configuration**: Managed via a YAML file (e.g., `configs/train_instructblip_config.yaml`).
+    -   Includes dataset paths, sampling details, model name (`name_pretrained`), fine-tuning method (`finetune_method`: "lora" or "full"), LoRA parameters (if applicable), batch size, learning rates, and output directory settings.
+-   **Functionality**:
+    -   Handles data preparation and tokenization suitable for InstructBLIP.
+    -   Configures the model for either LoRA or full fine-tuning.
+    -   For LoRA, it uses a manual PyTorch training loop with evaluation and saving of the best adapter.
+    -   For full fine-tuning, it leverages the Hugging Face `Trainer` API.
+    -   Saves model artifacts (LoRA adapters or full model weights) and processor/tokenizer configurations.
+-   **Outputs**:
+    -   For LoRA: The best (or final) LoRA adapter and processor, saved to `results/instructblip_finetune/<RUN_ID>/final_model_artifacts/`.
+    -   For Full Fine-tuning: The best fine-tuned model and processor, typically saved to the same location.
+    -   Training logs (TensorBoard, if configured).
+-   **Usage**:
+    ```bash
+    python src/training/train_instructblip.py --config configs/your_instructblip_train_config.yaml
+    ```
+
+## CLIP Linear Probing Training (`clip_linear_probe_train.py`)
+
+This script trains a linear classifier (or a shallow MLP) on top of frozen image embeddings extracted from a pre-trained CLIP model. This is a common technique to adapt large pre-trained models to specific downstream tasks with relatively low computational cost.
+
+-   **Purpose**: To evaluate the performance of CLIP features for distinguishing AI-generated images from real (nature) images by only training a simple classifier on these features.
+-   **Configuration**: `configs/clip_linear_probe_config.yaml`
+    -   Specifies the CLIP model ID (e.g., `openai/clip-vit-large-patch14`).
+    -   Defines paths to training, validation, and test datasets (AI and Nature image folders).
+    -   Sets parameters for data sampling (number of images per class for train/val/test).
+    -   Configures the linear classifier architecture (e.g., hidden dimensions, dropout).
+    -   Contains training parameters like learning rate, optimizer, batch size, number of epochs, and early stopping criteria.
+-   **Functionality**:
+    1.  Loads the specified pre-trained CLIP model and its processor.
+    2.  Freezes all parameters of the CLIP model.
+    3.  Prepares datasets:
+        -   Samples the specified number of images for training, validation, and test sets.
+        -   Ensures that validation and test images (drawn from the same source `val` directory) are non-overlapping.
+    4.  Extracts image embeddings for all selected images using the frozen CLIP image encoder.
+    5.  Initializes a linear classifier (or a simple MLP) on top of these embeddings.
+    6.  Trains the classifier using the extracted embeddings and corresponding labels.
+    7.  Monitors performance on the validation set and implements early stopping to prevent overfitting and save the best model.
+    8.  After training, evaluates the best performing classifier on the (unseen) test set.
+-   **Outputs**:
+    -   The trained linear classifier's state dictionary (e.g., `best_linear_classifier.pth`).
+    -   A JSON file containing the training history (train/validation loss and metrics per epoch).
+    -   A JSON file summarizing the evaluation results on the test set (accuracy, classification report, confusion matrix, and the configuration used for the run).
+    -   All outputs are saved in a timestamped subdirectory under the `output_dir_base` specified in the config (e.g., `results/clip_linear_probe/experiment_name_TIMESTAMP/`).
+-   **Usage**:
+    ```bash
+    python src/training/clip_linear_probe_train.py --config configs/clip_linear_probe_config.yaml
+    ```
+
+---
+
+*More training script details can be added here as the project evolves.* 

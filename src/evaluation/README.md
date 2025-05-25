@@ -297,3 +297,75 @@ The script is pre-configured to evaluate on the following dataset structures:
 To use different datasets, you will need to modify the `datasets_to_evaluate` list within the `src/inference.py` script directly.
 
 The script will output the accuracy for each subfolder, each dataset, and an overall accuracy across all processed images.
+
+# Evaluation Scripts Readme
+
+This directory contains scripts for evaluating trained models or specific model capabilities on various datasets.
+
+## CNN Model Evaluation (`eval_cnn.py`)
+
+This script evaluates a trained CNN model (e.g., ResNet50) on multiple image datasets to assess its performance in distinguishing AI-generated images from real (nature) images.
+
+-   **Purpose**: To test a trained CNN classifier across different image datasets, which may vary in terms of generation models, content, or style.
+-   **Configuration**: `configs/eval_cnn_config.yaml`
+    -   Specifies the path to the pre-trained CNN model (`.pth` file).
+    -   Defines general settings like seed and GPU ID.
+    -   Lists multiple datasets for evaluation. Each dataset entry includes:
+        -   A unique name for the dataset.
+        -   Paths to folders containing AI-generated images (`ai_path`) and real/natural images (`nature_path`).
+        -   The corresponding integer labels for AI (`ai_label`) and nature (`nature_label`) images (e.g., 0 for nature, 1 for AI).
+    -   Sets the number of samples to randomly evaluate from each AI/nature folder within each dataset (`num_samples_per_folder`).
+    -   Specifies a base directory for saving evaluation results (`output_base_dir`).
+-   **Functionality**:
+    1.  Loads the trained CNN model and sets it to evaluation mode.
+    2.  Applies the same image transformations used during its training.
+    3.  For each dataset defined in the configuration:
+        -   Randomly samples the specified number of images from the AI and nature image folders.
+        -   Performs inference on these sampled images.
+        -   Calculates and prints accuracy for the AI folder, nature folder, and overall for the dataset.
+    4.  Calculates and prints an overall accuracy across all processed samples from all datasets.
+-   **Outputs**:
+    -   Console output detailing accuracy for each folder and dataset, plus an overall summary.
+    -   A JSON file named `evaluation_summary.json` saved in a timestamped subdirectory (e.g., `results/cnn_evaluations/config_name_TIMESTAMP/`). This file contains:
+        -   Details of the configuration used (config file path, model path, seed, etc.).
+        -   For each evaluated dataset: name, paths, labels, number of correct predictions, total samples, and accuracy for AI and nature folders, and overall dataset accuracy.
+        -   An overall summary: total correct predictions, total samples, and overall accuracy across all datasets.
+-   **Usage**:
+    ```bash
+    python src/evaluation/eval_cnn.py --config configs/eval_cnn_config.yaml
+    ```
+
+## Trained CLIP Linear Probe Evaluation (`eval_clip_linear_probe.py`)
+
+This script evaluates a trained linear classifier (which was trained on top of frozen CLIP image embeddings) on multiple image datasets. It is designed to assess the generalization capability of the CLIP features combined with the simple learned classifier.
+
+-   **Purpose**: To test the performance of a fine-tuned CLIP linear probe (CLIP backbone + trained linear classifier) on diverse image datasets beyond the one it was originally tested on during its training phase.
+-   **Configuration**: `configs/eval_clip_linear_probe_config.yaml`
+    -   Specifies the path to the trained linear classifier's state dictionary (`.pth` file) obtained from the `clip_linear_probe_train.py` script.
+    -   Indicates the CLIP model ID (e.g., `openai/clip-vit-large-patch14`) that was used to extract features for training the linear probe. This ensures consistency.
+    -   Includes the architecture configuration of the saved linear classifier (hidden dimensions, number of classes) to correctly reconstruct the model.
+    -   Defines general settings like seed, GPU ID, and an output base directory.
+    -   Lists multiple datasets for evaluation, similar to `eval_cnn.py`. Each dataset entry includes a name, paths to AI and nature image folders, and their corresponding integer labels.
+    -   Sets parameters like the number of samples to evaluate per folder and batch sizes for embedding extraction and classifier inference.
+-   **Functionality**:
+    1.  Loads the specified pre-trained CLIP model (and its processor) and freezes its parameters.
+    2.  Loads the trained linear classifier model and its saved weights.
+    3.  For each dataset defined in the configuration:
+        -   Optionally, randomly samples a specified number of images from the AI and nature image folders.
+        -   Extracts CLIP image embeddings for the selected images in batches.
+        -   Feeds these embeddings into the loaded linear classifier to get predictions.
+        -   Calculates accuracy, generates a classification report (precision, recall, F1-score), and a confusion matrix for the dataset.
+-   **Outputs**:
+    -   Console output detailing performance for each dataset.
+    -   A JSON file named `cross_dataset_evaluation_summary.json` saved in a timestamped subdirectory (e.g., `results/clip_linear_probe_evaluations/config_name_TIMESTAMP/`). This file contains:
+        -   Details of the evaluation configuration (paths, model IDs, seed).
+        -   For each evaluated dataset: its name, achieved accuracy, full classification report (as a dictionary), confusion matrix, and the number of samples processed.
+-   **Usage**:
+    ```bash
+    python src/evaluation/eval_clip_linear_probe.py --config configs/eval_clip_linear_probe_config.yaml
+    ```
+    *Ensure the `linear_classifier_path` in the YAML config points to a valid trained model file.*
+
+---
+
+*More evaluation script details can be added here as the project evolves.*
