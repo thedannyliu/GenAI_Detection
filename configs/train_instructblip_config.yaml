@@ -1,0 +1,48 @@
+# configs/train_instructblip_config.yaml
+
+# 資料設定 (Data Settings)
+data:
+  train_path: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0419_sdv4/train" # 訓練資料集的路徑 (Path to the training dataset)
+  val_test_path: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0419_sdv4/val"  # 驗證與測試資料集的路徑 (Path to the validation and test dataset)
+  num_train_samples: 10000                                                            # 訓練樣本數量 (Number of training samples)
+  num_val_samples: 1000                                                               # 驗證樣本數量 (Number of validation samples)
+  num_test_samples: 1000                                                              # 測試樣本數量 (用於確保資料分割的一致性，訓練腳本本身不直接使用此測試集) (Number of test samples - for data split consistency, not directly used by this training script)
+  seed: 42                                                                            # 隨機種子 (Random seed for reproducibility)
+
+# 模型設定 (Model Settings)
+model:
+  name_pretrained: "Salesforce/instructblip-vicuna-7b"                                # 預訓練模型的名稱或路徑 (Name or path of the pretrained model)
+  finetune_method: "lora"                                                             # 微調方法："lora" 或 "full" (Fine-tuning method: "lora" or "full")
+  # LoRA 微調參數 (僅當 finetune_method 為 "lora" 時使用) (LoRA fine-tuning parameters - used only if finetune_method is "lora")
+  lora_params:
+    r: 16                                                                             # LoRA 的秩 (Rank of LoRA)
+    alpha: 32                                                                         # LoRA 的 alpha 縮放因子 (Alpha scaling factor for LoRA)
+    dropout: 0.05                                                                     # LoRA 層的 dropout 比率 (Dropout rate for LoRA layers)
+    target_modules: ["query", "value", "q_proj", "v_proj"]                                     # 要應用 LoRA 的目標模組列表 (視模型架構可能需調整)
+
+# 訓練設定 (Training Settings)
+training:
+  should_train: True                                                                  # 是否執行訓練的布林標誌 (Boolean flag to control if training should run)
+  epochs: 2000                                                                         # 訓練的週期數 (最大週期數，可能因提早停止而減少) (Max number of training epochs, may be reduced by early stopping)
+  batch_size: 4                                                                       # 訓練批次大小 (Training batch size)
+  learning_rate_full: 5.0e-5                                                          # "full" 微調時的學習率 (Learning rate for "full" fine-tuning)
+  learning_rate_lora: 1.0e-4                                                          # "lora" 微調時的學習率 (Learning rate for "lora" fine-tuning)
+  warmup_steps: 50                                                                    # 學習率預熱步數 (Number of warmup steps for the learning rate scheduler)
+  weight_decay: 0.01                                                                  # 權重衰減率 (Weight decay rate)
+  max_target_token_length: 64                                                         # 生成目標文本的最大 token 長度 (Maximum token length for the generated target text)
+  prompt_config_idx: 0                                                                # 使用 USER_PROMPTS 列表中的哪一個提示配置 (索引值) (Index of the prompt configuration to use from the USER_PROMPTS list)
+  evaluation_strategy: "epoch"                                                        # 評估策略 ("no", "steps", "epoch") (Evaluation strategy)
+  save_strategy: "epoch"                                                              # 儲存策略 ("no", "steps", "epoch") (Saving strategy)
+  save_total_limit: 3                                                                 # 最多儲存的檢查點數量 (不包含最佳模型) (Max number of checkpoints to save, excluding the best one if load_best_model_at_end=True)
+  early_stopping_patience: 50                                                         # 提早停止的容忍度 (多少次評估沒有改善就停止) (Patience for early stopping: number of evaluations with no improvement)
+  early_stopping_threshold: 0.0                                                       # 提早停止的改善閾值 (被視為改善的最小變化量) (Threshold for early stopping: minimum change to qualify as an improvement)
+
+# 輸出設定 (Output Settings)
+output:
+  base_results_dir_root: "results/instructblip_finetune"                              # 儲存結果的基礎根目錄 (Root directory for saving results)
+                                                                                      # 完整的 RUN_ID 和相關路徑將在腳本中根據這些配置動態生成
+                                                                                      # (The full RUN_ID and related paths will be dynamically generated in the script based on these configurations)
+
+# 環境設定 (Environment Settings)
+environment:
+  gpu_id: 2 # 指定使用的 GPU ID (整數)。例如 0, 1, ...。設為 -1 表示使用 CPU。留空或 CUDA 不可用，則自動選擇。 (Specify GPU ID (integer). e.g., 0, 1, ... Set to -1 for CPU. Auto-select if left blank or CUDA not available.) 

@@ -22,3 +22,4 @@ regex>=2023.0.0
 open_clip_torch>=2.20.0
 flamingo-pytorch>=0.0.1
 sentencepiece
+peft

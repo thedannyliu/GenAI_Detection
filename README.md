@@ -59,14 +59,30 @@ project-root/
 
 ### Training a Model
 
-**For VLM Models (Fine-tuning):**
+**For VLM Models (Fine-tuning InstructBLIP):**
 
-```bash
-python src/experiments/vlm_finetune_and_infer.py --config path_to_your_vlm_config.yaml 
-# (Note: This script was identified as a likely candidate for main.py functionality for VLMs)
-# Or, if main.py is indeed the entry point and uses configs like vlm_fine_tune.yaml:
-# python src/main.py --config configs/vlm_fine_tune.yaml 
-```
+To fine-tune an InstructBLIP model (e.g., `Salesforce/instructblip-vicuna-7b`) for AI-generated image detection, use the `train_instructblip.py` script. This script handles data preparation, LoRA or full fine-tuning, and saves model artifacts. It supports evaluation at each epoch, saving the best and recent checkpoints, and early stopping.
+
+All training parameters are managed through a YAML configuration file. A template is provided in `configs/train_instructblip_config.yaml`. You should copy and modify this file.
+
+To run the training:
+1.  **Prepare your configuration file**: Copy `configs/train_instructblip_config.yaml` (e.g., to `configs/my_instructblip_vicuna_train_config.yaml`) and edit it. Key parameters include:
+    *   `data`: Paths and sample counts.
+    *   `model`: `name_pretrained` (e.g., `"Salesforce/instructblip-vicuna-7b"`), `finetune_method` ("lora" or "full"), and `lora_params` (ensure `target_modules` are appropriate for the chosen model if using LoRA).
+    *   `training`: `epochs` (max epochs), `batch_size`, learning rates, `evaluation_strategy` (set to `"epoch"` for per-epoch validation), `save_strategy` (set to `"epoch"` to save checkpoints per epoch), `save_total_limit` (e.g., 3, to keep recent checkpoints), `early_stopping_patience` (e.g., 50, epochs to wait for improvement before stopping), and `early_stopping_threshold`.
+    *   `output`: `base_results_dir_root`.
+    *   `environment` (New): `gpu_id` (e.g., `0`, `1` for specific GPU, `-1` for CPU, or leave blank/null for auto-selection).
+
+2.  **Run the training script**:
+    ```bash
+    python src/training/train_instructblip.py --config configs/my_instructblip_vicuna_train_config.yaml
+    ```
+    Replace with your actual configuration file path.
+
+The script will create a `RUN_ID` based on the configuration. 
+    *   The **best model** (based on validation loss) will be saved in `<output.base_results_dir_root>/<RUN_ID>/final_model_artifacts/`.
+    *   **Recent checkpoints** (including the last one if training completes or stops early) will be saved in `<output.base_results_dir_root>/<RUN_ID>/trainer_checkpoints/`. The number of checkpoints is limited by `save_total_limit`.
+    *   Training logs for TensorBoard will be in `<output.base_results_dir_root>/<RUN_ID>/training_logs/`.
 
 **For CNN-based Classification (New):**
 
@@ -92,6 +108,19 @@ This script now supports loading all configurations from the YAML file, saves bo
 ```bash
 python src/main.py --config configs/vlm_zero_shot.yaml --mode eval
 ```
+
+### Evaluating a Fine-tuned VLM Model (InstructBLIP)
+
+To evaluate a fine-tuned InstructBLIP model (trained using `src/training/train_instructblip.py`) on a test set, use the `eval_instructblip.py` script. This script loads the specified test data, the trained model artifacts (based on a `RUN_ID` matching the training run), performs inference, and calculates evaluation metrics.
+
+1.  **Ensure your trained model artifacts exist**: The training script saves artifacts to `results/instructblip_finetune/<RUN_ID>/final_model_artifacts/`.
+2.  **Configure `eval_instructblip.py`**: Modify the main block of `src/evaluation/eval_instructblip.py` to set the correct `RUN_ID` parameters (e.g., `FINETUNE_METHOD`, `NUM_TRAIN_SAMPLES_CONFIG`, `MODEL_NAME_PRETRAINED_CONFIG`, etc.) to match the training run you want to evaluate. This ensures the script loads the correct model and test data.
+3.  **Run the evaluation script**:
+
+    ```bash
+    python src/evaluation/eval_instructblip.py
+    ```
+    Evaluation results, including detailed metrics, classification reports, and confusion matrices, will be saved in a subdirectory like `results/instructblip_finetune/<RUN_ID>/evaluation_on_test_set/`.
 
 ### Custom Zero-shot VLM Evaluation (New)
 
