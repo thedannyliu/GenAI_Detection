@@ -372,9 +372,9 @@ if __name__ == "__main__":
 
     criterion = nn.CrossEntropyLoss()
     if training_cfg['optimizer'].lower() == 'adamw':
-        optimizer = optim.AdamW(linear_classifier.parameters(), lr=training_cfg['learning_rate'], weight_decay=training_cfg.get('weight_decay', 0.01))
+        optimizer = optim.AdamW(linear_classifier.parameters(), lr=float(training_cfg['learning_rate']), weight_decay=float(training_cfg.get('weight_decay', 0.01)))
     else: 
-        optimizer = optim.Adam(linear_classifier.parameters(), lr=training_cfg['learning_rate'])
+        optimizer = optim.Adam(linear_classifier.parameters(), lr=float(training_cfg['learning_rate']))
     
     print(f"Optimizer: {training_cfg['optimizer']}, LR: {training_cfg['learning_rate']}")
 
