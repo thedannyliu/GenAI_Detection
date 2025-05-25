@@ -68,8 +68,8 @@ All training parameters are managed through a YAML configuration file. A templat
 To run the training:
 1.  **Prepare your configuration file**: Copy `configs/train_instructblip_config.yaml` (e.g., to `configs/my_instructblip_vicuna_train_config.yaml`) and edit it. Key parameters include:
     *   `data`: Paths and sample counts.
-    *   `model`: `name_pretrained` (e.g., `"Salesforce/instructblip-vicuna-7b"`), `finetune_method` ("lora" or "full"), and `lora_params` (ensure `target_modules` are appropriate for the chosen model if using LoRA).
-    *   `training`: `epochs` (max epochs), `batch_size`, learning rates, `evaluation_strategy` (set to `"epoch"` for per-epoch validation), `save_strategy` (set to `"epoch"` to save checkpoints per epoch), `save_total_limit` (e.g., 3, to keep recent checkpoints), `early_stopping_patience` (e.g., 50, epochs to wait for improvement before stopping), and `early_stopping_threshold`.
+    *   `model`: `name_pretrained` (e.g., `\"Salesforce/instructblip-vicuna-7b\"`), `finetune_method` ("lora" or "full"), and `lora_params` (ensure `target_modules` are appropriate for the chosen model if using LoRA).
+    *   `training`: `epochs` (max epochs), `batch_size`, learning rates (`learning_rate_lora` or `learning_rate_full`), `warmup_steps`. Note: For LoRA fine-tuning, some advanced `Trainer`-specific settings like `evaluation_strategy`, `save_strategy`, `save_total_limit`, `early_stopping_patience`, and `early_stopping_threshold` are now managed by a simplified manual PyTorch loop. The script will save the LoRA adapter that achieves the best validation loss (if a validation set is provided), or the final adapter otherwise. Full fine-tuning still uses the Hugging Face `Trainer` with its full capabilities.
     *   `output`: `base_results_dir_root`.
     *   `environment` (New): `gpu_id` (e.g., `0`, `1` for specific GPU, `-1` for CPU, or leave blank/null for auto-selection).
 
@@ -80,9 +80,9 @@ To run the training:
     Replace with your actual configuration file path.
 
 The script will create a `RUN_ID` based on the configuration. 
-    *   The **best model** (based on validation loss) will be saved in `<output.base_results_dir_root>/<RUN_ID>/final_model_artifacts/`.
-    *   **Recent checkpoints** (including the last one if training completes or stops early) will be saved in `<output.base_results_dir_root>/<RUN_ID>/trainer_checkpoints/`. The number of checkpoints is limited by `save_total_limit`.
-    *   Training logs for TensorBoard will be in `<output.base_results_dir_root>/<RUN_ID>/training_logs/`.
+    *   For LoRA fine-tuning: The **best LoRA adapter** (based on validation loss, if validation data is used) or the **final adapter** will be saved in `<output.base_results_dir_root>/<RUN_ID>/final_model_artifacts/`. The associated processor will also be saved there. Checkpoints during intermediate LoRA training epochs are not saved by default in the manual loop, unlike the `Trainer`'s behavior for full fine-tuning.
+    *   For Full fine-tuning: The **best model** (based on validation loss) will be saved in `<output.base_results_dir_root>/<RUN_ID>/final_model_artifacts/` (or directly in the `output_dir` specified to Trainer, which is typically this path for full fine-tuning). Recent checkpoints might be in a `trainer_checkpoints` subdirectory if configured, but the primary output is the best model.
+    *   Training logs for TensorBoard (if enabled and configured) will be in `<output.base_results_dir_root>/<RUN_ID>/training_logs/`. For manual LoRA, TensorBoard integration needs to be explicitly uncommented in the script.
 
 **For CNN-based Classification (New):**
 
