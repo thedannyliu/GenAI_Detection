@@ -59,7 +59,12 @@ project-root/
 4. **Download Dataset:**
    Follow instructions in `data/README.md` to download and prepare the genimage dataset.
 
-5. **Configuration:**
+5. **Dataset Notes:**
+   - **General Structure**: Most datasets are expected to follow a structure like `dataset_root/split_name/class_name/image.jpg`, where `class_name` is typically `nature` or `ai`.
+   - **Chameleon Dataset**: The Chameleon dataset has a slightly different structure for its class folders, using `0_real` and `1_fake` instead of `nature` and `ai` (e.g., `/raid/dannyliu/dataset/GAI_Dataset/Chameleon/test/0_real/...`). 
+   - **Dataset Loading (`GenImageDataset`)**: The `src.data_processing.custom_dataset.GenImageDataset` class has been updated to handle these variations. It now dynamically determines the class subdirectories based on the `class_to_idx` mapping provided in the dataset configuration (e.g., in `configs/vlm_zero_shot_custom.yaml`). The keys from `class_to_idx` (like `"0_real"` or `"nature"`) are used to locate the respective class folders. If `class_to_idx` is not specified for a dataset, it defaults to looking for `nature` and `ai` folders.
+
+6. **Configuration:**
    Review and adjust YAML files in `configs/` as needed.
 
 ## Usage

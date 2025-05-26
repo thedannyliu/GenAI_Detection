@@ -123,3 +123,10 @@ print(scores) # Example: {'a real photograph': 1.0, 'an authentic image': 1.0, .
 
 #### LlavaModelWrapper
 // ... existing code ... 
+```
+
+## Prompt Strategy Initialization
+
+To ensure compatibility with evaluation scripts (like `src/experiments/zero_shot_vlm_eval.py`) that dynamically assign a prompt strategy object to VLM wrappers, all VLM wrapper classes (e.g., `CLIPModelWrapper`, `BlipModelWrapper`, `InstructBlipModelWrapper`, `LlavaModelWrapper`) in this submodule initialize a `self.prompt_strategy` attribute to `None` within their `__init__` method. 
+
+This allows the evaluation script to later assign a configured `PromptStrategy` instance (e.g., `GenImageDetectPrompts`) to this attribute. The `predict` or `predict_batch` methods within the VLM wrappers can then reliably access `self.prompt_strategy` to map model outputs (like best prompt text or generated keywords) to class labels.

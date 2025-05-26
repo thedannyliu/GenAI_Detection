@@ -33,9 +33,9 @@ class GenImageDataset(Dataset):
             seed (int): Random seed for sampling.
         """
         self.root_dir = root_dir
-        self.data_split_dir = split if split != "test" else "val" # test split uses 'val' data
+        self.data_split_dir = split # Directly use the provided split name
         self.transform = transform or self._get_default_transform()
-        self.class_to_idx = class_to_idx or {"nature": 0, "ai": 1}
+        self.class_to_idx = class_to_idx
         self.num_samples_per_class = num_samples_per_class
         self.exclude_files = exclude_files or set()
         self.seed = seed
@@ -50,8 +50,23 @@ class GenImageDataset(Dataset):
         
         random.seed(self.seed) # Set seed before listing and sampling
 
-        self._load_images_from_class_dir(self.nature_dir, "nature")
-        self._load_images_from_class_dir(self.ai_dir, "ai")
+        # Dynamically load images based on class_to_idx
+        if not self.class_to_idx:
+            # Fallback or error if class_to_idx is not provided, 
+            # though the VLMGenImageDataset in zero_shot_vlm_eval.py seems to always get it from config.
+            # For robustness, we could default to the old behavior or raise an error.
+            # Here, we'll print a warning and attempt the old hardcoded paths if class_to_idx is empty.
+            print("Warning: class_to_idx is empty. Attempting to load with default 'nature' and 'ai' subdirectories.")
+            default_class_map = {"nature": 0, "ai": 1}
+            for class_name, class_idx in default_class_map.items(): # class_idx is not directly used here, but good to have
+                class_dir = os.path.join(root_dir, self.data_split_dir, class_name)
+                self._load_images_from_class_dir(class_dir, class_name) # Pass class_name for label mapping
+        else:
+            for class_name, class_idx in self.class_to_idx.items(): # class_idx is not directly used here
+                # class_name here will be "0_real", "1_fake" for Chameleon
+                # or "nature", "ai" for others, as defined in YAML.
+                class_dir = os.path.join(root_dir, self.data_split_dir, class_name)
+                self._load_images_from_class_dir(class_dir, class_name) # Pass class_name for label mapping
 
     def _load_images_from_class_dir(self, class_root_dir: str, class_name: str):
         """Helper function to load images for a specific class, with sampling."""

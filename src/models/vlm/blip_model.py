@@ -11,6 +11,10 @@ class BlipModelWrapper(BaseVLM):
     Default is "Salesforce/blip-image-captioning-large" for captioning, 
     or "Salesforce/blip-itm-large-eval" for image-text matching.
     """
+    def __init__(self, model_name: str, config: Any = None):
+        super().__init__(model_name, config)
+        self.prompt_strategy = None # Initialize prompt_strategy
+
     def _load_model(self):
         model_id = self.config.get("model_id", "Salesforce/blip-itm-large-eval") # Default to ITM for zero-shot classification
         self.task = self.config.get("task", "image-text-matching") # or "image-captioning"

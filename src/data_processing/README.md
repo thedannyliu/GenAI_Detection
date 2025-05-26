@@ -44,10 +44,11 @@ for images, labels in train_loader:
 
 ## Dataset Features
 
-- **Split Selection**: Load train or validation splits with the `split` parameter
+- **Split Selection**: Load `train`, `val`, or `test` splits using the `split` parameter. The specified split name is used directly to find the corresponding subdirectory (e.g., `root_dir/test/`).
 - **Transformations**: Apply PyTorch transforms for augmentation and preprocessing
 - **Generator Selection**: Optionally filter by specific generator with `generator` parameter
 - **Class Sampling**: Sample from specific ImageNet classes if needed
+- **Flexible Class Directory Mapping**: The `GenImageDataset` now dynamically determines class subdirectories based on the `class_to_idx` parameter provided during initialization. The keys of the `class_to_idx` dictionary (e.g., `{"0_real": 0, "1_fake": 1}` or `{"nature": 0, "ai": 1}`) are used to identify the respective class folders within the `root_dir/split/` path. This allows for compatibility with datasets that use different naming conventions for their class folders (e.g., `0_real`, `1_fake` for the Chameleon dataset, or the default `nature`, `ai`). If `class_to_idx` is not provided or is empty, the dataset defaults to looking for `nature` and `ai` subdirectories.
 
 ## Recommended Transforms
 
@@ -143,7 +144,6 @@ val_loader = DataLoader(
     pin_memory=True
 )
 ```
-
 ## Notes on Performance
 
 - When working with the full dataset, consider using multiple workers and pinned memory

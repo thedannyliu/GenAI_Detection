@@ -63,24 +63,23 @@ def set_seed(seed_value):
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
-def evaluate_predictions(all_predictions, all_labels, model_name_unique, prompt_strategy, global_cfg_dict, model_specific_output_dir, all_prompt_score_outputs):
+def evaluate_predictions(all_predictions, all_labels, model_name_unique, dataset_name, current_dataset_config, global_cfg_dict, specific_output_dir, all_prompt_score_outputs):
     # The signature of evaluate_predictions was changed in a previous step and seems to have been reverted partially in the latest file content.
     # Let's use the one that takes model_name_unique, prompt_strategy etc.
     # Also, `class_names_for_eval` is needed for classification_report target_names.
     # This needs to be passed or retrieved from global_cfg_dict and dataset_cfg_dict.
     
-    dataset_cfg_dict = global_cfg_dict['dataset'] # Assuming dataset config is here
-    class_to_idx = dataset_cfg_dict.get('class_to_idx', {'nature': LABEL_REAL, 'ai': LABEL_AI})
+    class_to_idx = current_dataset_config.get('class_to_idx', {'nature': LABEL_REAL, 'ai': LABEL_AI})
     idx_to_class = {v: k for k, v in class_to_idx.items()}
     # Ensure class_names_for_eval are in the correct order [REAL, AI]
     class_names_for_eval = [idx_to_class.get(LABEL_REAL, "real"), idx_to_class.get(LABEL_AI, "ai")]
 
     if not all_predictions or not all_labels:
-        print(f"No predictions/labels for {model_name_unique}. Skipping metrics.")
+        print(f"No predictions/labels for {model_name_unique} on {dataset_name}. Skipping metrics.")
         # Create a minimal metrics dict indicating failure/skip
         metrics = {"accuracy": 0, "num_samples": 0, "error": "No predictions or labels available."}
     elif len(all_predictions) != len(all_labels):
-        print(f"Mismatch in predictions/labels count for {model_name_unique}. Skipping metrics.")
+        print(f"Mismatch in predictions/labels count for {model_name_unique} on {dataset_name}. Skipping metrics.")
         metrics = {"accuracy": 0, "num_samples": 0, "error": "Mismatch in prediction/label count."}
     else:
         predictions_arr_orig = np.array(all_predictions)
@@ -161,33 +160,34 @@ def evaluate_predictions(all_predictions, all_labels, model_name_unique, prompt_
         metrics["num_correctly_classified_0_1"] = int(correct_0_1_predictions_val) # Add this for clarity
 
     # Save metrics
-    metrics_filename = os.path.join(model_specific_output_dir, f"metrics_{model_name_unique}.json")
+    metrics_filename = os.path.join(specific_output_dir, f"metrics_{model_name_unique}_{dataset_name}.json")
     with open(metrics_filename, 'w') as f:
         json.dump(metrics, f, indent=4)
-    print(f"Metrics for {model_name_unique} saved to {metrics_filename}")
+    print(f"Metrics for {model_name_unique} on {dataset_name} saved to {metrics_filename}")
 
     # Save raw predictions and scores
-    raw_output_filename = os.path.join(model_specific_output_dir, f"predictions_and_scores_{model_name_unique}.json")
+    raw_output_filename = os.path.join(specific_output_dir, f"predictions_and_scores_{model_name_unique}_{dataset_name}.json")
     with open(raw_output_filename, 'w') as f:
         json.dump(all_prompt_score_outputs, f, indent=4)
-    print(f"Raw predictions and scores for {model_name_unique} saved to {raw_output_filename}")
+    print(f"Raw predictions and scores for {model_name_unique} on {dataset_name} saved to {raw_output_filename}")
     return metrics # Or whatever this function is supposed to return
 
-def setup_output_directory(output_dir_base: str, model_name_unique: str, dataset_identifier: str) -> str:
+def setup_output_directory(output_dir_base: str, model_name_unique: str, dataset_name: str) -> str:
     # Sanitize dataset_identifier to be a valid path component
-    sanitized_dataset_id = dataset_identifier.replace('/', '_').replace('\\', '_') # Basic sanitization
+    sanitized_dataset_name = dataset_name.replace('/', '_').replace('\\', '_') # Basic sanitization
     # Truncate if too long
     max_len_dataset_id = 50
-    if len(sanitized_dataset_id) > max_len_dataset_id:
-        sanitized_dataset_id = sanitized_dataset_id[:max_len_dataset_id]
+    if len(sanitized_dataset_name) > max_len_dataset_id:
+        sanitized_dataset_name = sanitized_dataset_name[:max_len_dataset_id]
         
-    model_specific_output_dir = os.path.join(output_dir_base, sanitized_dataset_id, model_name_unique)
-    os.makedirs(model_specific_output_dir, exist_ok=True)
-    print(f"Output directory for {model_name_unique} on {sanitized_dataset_id}: {model_specific_output_dir}")
-    return model_specific_output_dir
+    # New structure: output_dir_base / model_name_unique / sanitized_dataset_name
+    model_and_dataset_specific_output_dir = os.path.join(output_dir_base, model_name_unique, sanitized_dataset_name)
+    os.makedirs(model_and_dataset_specific_output_dir, exist_ok=True)
+    print(f"Output directory for {model_name_unique} on {dataset_name}: {model_and_dataset_specific_output_dir}")
+    return model_and_dataset_specific_output_dir
 
-def run_evaluation_for_model(model_name_unique: str, model_config_dict: Dict, prompt_strategy_config_dict: Dict, dataset_cfg_dict: Dict, global_cfg_dict: Dict):
-    print(f"\nStarting evaluation for model: {model_name_unique}")
+def run_evaluation_for_model_on_dataset(model_name_unique: str, model_config_dict: Dict, prompt_strategy_config_dict: Dict, current_dataset_config: Dict, global_cfg_dict: Dict, config_path_for_copy: str):
+    print(f"\nStarting evaluation for model: {model_name_unique} on dataset: {current_dataset_config['name']}")
     device = f"cuda:{global_cfg_dict['eval_gpu_id']}" if global_cfg_dict.get('eval_gpu_id') is not None and torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
@@ -219,19 +219,22 @@ def run_evaluation_for_model(model_name_unique: str, model_config_dict: Dict, pr
     # 2. Setup Prompt Strategy
     print("Initializing prompt strategy...")
     prompt_strategy = get_instance_from_config(prompt_strategy_config_dict)
-    model.prompt_strategy = prompt_strategy # Assign prompt_strategy to the model instance
+    if hasattr(model, 'prompt_strategy'): # Check if model expects prompt_strategy to be set
+        model.prompt_strategy = prompt_strategy # Assign prompt_strategy to the model instance
+    else:
+        print(f"Warning: Model {model_name_unique} does not have a 'prompt_strategy' attribute. Prompt strategy might not be used as expected by the model wrapper.")
     print("Prompt strategy initialized.")
 
     # 3. Setup Dataset and DataLoader
-    # `eval_split` is defined in the dataset_cfg_dict from YAML
-    eval_split = dataset_cfg_dict.get('eval_split', 'val') 
-    print(f"Setting up dataset and loader for split: {eval_split}...")
-    eval_dataset, eval_loader = setup_dataset_and_loader(dataset_cfg_dict, global_cfg_dict, split=eval_split)
+    # `eval_split` is defined in the current_dataset_config (after merging defaults)
+    eval_split = current_dataset_config.get('eval_split', 'val') 
+    print(f"Setting up dataset and loader for split: {eval_split} using dataset config: {current_dataset_config['name']}...")
+    eval_dataset, eval_loader = setup_dataset_and_loader(current_dataset_config, global_cfg_dict, split=eval_split)
 
     if eval_dataset is None or eval_loader is None:
-        print(f"Error: Could not setup dataset/loader for {model_name_unique} on split '{eval_split}'. Skipping evaluation.")
+        print(f"Error: Could not setup dataset/loader for {model_name_unique} on dataset {current_dataset_config['name']}, split '{eval_split}'. Skipping evaluation for this dataset.")
         return
-    print(f"Dataset and DataLoader for '{eval_split}' ready.")
+    print(f"Dataset and DataLoader for '{current_dataset_config['name']}' (split '{eval_split}') ready.")
 
     all_predictions = []
     all_true_labels = []
@@ -320,18 +323,28 @@ def run_evaluation_for_model(model_name_unique: str, model_config_dict: Dict, pr
     # After loop, evaluate predictions
     print(f"\nFinished predictions for {model_name_unique}.")
     if not all_predictions or not all_true_labels:
-        print(f"No predictions made for {model_name_unique}. Skipping metrics calculation.")
+        print(f"No predictions made for {model_name_unique} on {current_dataset_config['name']}. Skipping metrics calculation.")
         return
 
     output_dir_base = global_cfg_dict.get('output_dir_base', 'results/zero_shot_eval')
-    model_specific_output_dir = setup_output_directory(output_dir_base, model_name_unique, dataset_cfg_dict.get('root_dir', 'unknown_dataset'))
+    # Specific output dir for this model and this dataset
+    specific_output_dir = setup_output_directory(output_dir_base, model_name_unique, current_dataset_config['name'])
     
-    evaluate_predictions(all_predictions, all_true_labels, model_name_unique, prompt_strategy, global_cfg_dict, model_specific_output_dir, all_prompt_score_outputs)
+    evaluate_predictions(all_predictions, all_true_labels, model_name_unique, current_dataset_config['name'], current_dataset_config, global_cfg_dict, specific_output_dir, all_prompt_score_outputs)
+    
+    # Copy the main config file to this specific output directory
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    copied_config_filename = os.path.join(specific_output_dir, f"config_used_MAIN_{model_name_unique}_{current_dataset_config['name']}_{timestamp}.yaml")
+    try:
+        shutil.copy(config_path_for_copy, copied_config_filename)
+        print(f"Main configuration file copied to: {copied_config_filename} for model {model_name_unique} on dataset {current_dataset_config['name']}")
+    except Exception as e_copy:
+        print(f"Error copying main config file for {model_name_unique} on dataset {current_dataset_config['name']}: {e_copy}")
 
-def setup_dataset_and_loader(dataset_cfg, global_cfg, split='val'):
-    print(f"Setting up dataset for split: {split}")
-    data_root_dir = dataset_cfg['root_dir']
-    class_to_idx = dataset_cfg.get('class_to_idx')
+def setup_dataset_and_loader(dataset_cfg_for_current_run, global_cfg, split='val'):
+    print(f"Setting up dataset for split: {split} from dataset config: {dataset_cfg_for_current_run.get('name', 'Unknown Dataset')}")
+    data_root_dir = dataset_cfg_for_current_run['root_dir'] # This comes from the specific dataset entry
+    class_to_idx = dataset_cfg_for_current_run.get('class_to_idx') # class_to_idx from merged config
     
     # Ensure the split-specific directory exists (e.g., data_root_dir/val)
     split_dir = os.path.join(data_root_dir, split)
@@ -369,10 +382,10 @@ def setup_dataset_and_loader(dataset_cfg, global_cfg, split='val'):
     # --- End of added debug prints ---
 
     eval_dataset_for_loader = full_dataset
-    num_samples_eval = dataset_cfg.get('num_samples_eval', None)
+    num_samples_eval = dataset_cfg_for_current_run.get('num_samples_eval', None) # Use num_samples from the current dataset's config
 
     if num_samples_eval is not None and num_samples_eval > 0 and num_samples_eval < len(full_dataset):
-        print(f"Attempting to sample {num_samples_eval} images from '{split}' split ({len(full_dataset)} total)...")
+        print(f"Attempting to sample {num_samples_eval} images from '{split}' split of {dataset_cfg_for_current_run.get('name')} ({len(full_dataset)} total)...")
         labels_for_stratification = np.array(full_dataset.labels)
         unique_labels, counts = np.unique(labels_for_stratification, return_counts=True)
         print(f"Class distribution in full '{split}' set: {dict(zip(unique_labels, counts))}")
@@ -478,27 +491,20 @@ def run_zero_shot_evaluation(config_path: str):
     else:
         print("CUDA not available. Running on CPU.")
     
-    device = torch.device(f"cuda:{gpu_id}" if torch.cuda.is_available() and gpu_id is not None else "cpu")
+    # device = torch.device(f"cuda:{gpu_id}" if torch.cuda.is_available() and gpu_id is not None else "cpu") # Device is set inside run_evaluation_for_model_on_dataset
 
     # 2. Initialize Prompt Strategy (shared for all models in this run)
-    print("Initializing shared prompt strategy...")
+    print("Initializing shared prompt strategy config...")
     prompt_strategy_config = cfg['vlm']['prompt_config']
-    # prompt_strategy instance is now created inside run_evaluation_for_model
+    
+    # Get dataset defaults and list of datasets to evaluate
+    dataset_defaults = cfg.get('dataset_defaults', {})
+    evaluation_datasets = cfg.get('evaluation_datasets', [])
 
-    dataset_config = cfg['dataset']
-    
-    # --- Define class_to_idx and idx_to_class here ---
-    # This should align with dataset_config['class_to_idx'] from YAML
-    # Default: {'nature': 0, 'ai': 1}
-    class_to_idx = dataset_config.get('class_to_idx', {'nature': LABEL_REAL, 'ai': LABEL_AI})
-    idx_to_class = {v: k for k, v in class_to_idx.items()}
-    # class_names_for_eval will be derived inside evaluate_predictions based on these
-    # --- End definition ---
-    
-    # The VLMGenImageDataset definition is now at the top level of the file.
-    # The local instantiation of dataset/dataloader was also moved into run_evaluation_for_model.
-    # The main loop will call run_evaluation_for_model which internally calls setup_dataset_and_loader.
-    
+    if not evaluation_datasets:
+        print("Error: No 'evaluation_datasets' found in the YAML configuration.")
+        return
+        
     vlm_configs_to_run = cfg['vlm'].get('model_configs')
     if not vlm_configs_to_run:
         print("Error: No model configurations found in 'vlm.model_configs' in the YAML.")
@@ -512,24 +518,54 @@ def run_zero_shot_evaluation(config_path: str):
             return
 
     for model_run_config in vlm_configs_to_run:
-        # Note: prompt_strategy is now initialized inside run_evaluation_for_model
-        model_specific_output_dir = run_evaluation_for_model(
-            model_name_unique=model_run_config['name'],
-            model_config_dict=model_run_config['model_config'],
-            prompt_strategy_config_dict=prompt_strategy_config, # Pass the config dict here
-            dataset_cfg_dict=dataset_config,
-            global_cfg_dict=cfg
-        )
+        model_name_unique = model_run_config['name']
+        model_config_dict = model_run_config['model_config']
         
-        if model_specific_output_dir:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            model_run_name = model_run_config.get('name', 'unknown_model') # get name again for safety
-            copied_config_filename = os.path.join(model_specific_output_dir, f"config_used_MAIN_{model_run_name}_{timestamp}.yaml")
-            try:
-                shutil.copy(config_path, copied_config_filename)
-                print(f"Main configuration file copied to: {copied_config_filename} for model {model_run_name}")
-            except Exception as e_copy:
-                print(f"Error copying config file for {model_run_name}: {e_copy}")
+        print(f"\nProcessing Model: {model_name_unique}...")
+        
+        for dataset_entry in evaluation_datasets:
+            # Explicitly resolve parameters for the current dataset, prioritizing dataset_entry over dataset_defaults
+            dataset_name = dataset_entry.get('name')
+            if not dataset_name:
+                print(f"Skipping a dataset entry due to missing 'name': {dataset_entry}")
+                continue
+            
+            dataset_root_dir = dataset_entry.get('root_dir')
+            if not dataset_root_dir:
+                print(f"Skipping dataset '{dataset_name}' due to missing 'root_dir'.")
+                continue
+
+            # Resolve eval_split: specific from dataset_entry, then from dataset_defaults, then fallback to 'val'
+            resolved_eval_split = dataset_entry.get('eval_split', dataset_defaults.get('eval_split', 'val'))
+
+            # Resolve class_to_idx: specific from dataset_entry, then from dataset_defaults, then fallback to {'nature': 0, 'ai': 1}
+            default_class_map = {'nature': LABEL_REAL, 'ai': LABEL_AI} # Use defined labels
+            resolved_class_to_idx = dataset_entry.get('class_to_idx', dataset_defaults.get('class_to_idx', default_class_map))
+            
+            # Resolve num_samples_eval: specific, then default, then None (meaning use all samples)
+            resolved_num_samples_eval = dataset_entry.get('num_samples_eval', dataset_defaults.get('num_samples_eval', None))
+
+            # Construct the specific configuration for the current dataset evaluation
+            current_dataset_resolved_config = {
+                'name': dataset_name,
+                'root_dir': dataset_root_dir,
+                'eval_split': resolved_eval_split,
+                'class_to_idx': resolved_class_to_idx,
+                'num_samples_eval': resolved_num_samples_eval
+                # Add any other dataset-specific parameters here if needed in the future
+            }
+            
+            print(f"  Preparing to evaluate on dataset: {current_dataset_resolved_config['name']} with config: {current_dataset_resolved_config}")
+            
+            # Pass the original config_path for copying, and the resolved dataset configuration
+            run_evaluation_for_model_on_dataset(
+                model_name_unique=model_name_unique,
+                model_config_dict=model_config_dict,
+                prompt_strategy_config_dict=prompt_strategy_config,
+                current_dataset_config=current_dataset_resolved_config, # Use the explicitly resolved config
+                global_cfg_dict=cfg, 
+                config_path_for_copy=config_path
+            )
 
     print("\nAll evaluations complete.")
 

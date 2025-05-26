@@ -8,19 +8,44 @@ batch_size: 1 # VLMs typically process one image at a time for zero-shot with PI
 num_workers: 2
 
 # output_dir_base will be used to create model-specific subdirectories
-# e.g., results/zero_shot_eval/stable_diffusion_v1_4_test/CLIP-L-14/
-output_dir_base: "results/zero_shot_eval/stable_diffusion_v1_4_test"
+# e.g., results/zero_shot_eval/CLIP-L-14-OpenAI/imagenet_ai_0419_sdv4/
+output_dir_base: "results/zero_shot_eval" # Changed: model name will be a subdir, then dataset name
 
-# Dataset Configuration
-dataset:
-  # root_dir should point to the specific dataset folder containing train/val splits
-  # Using imagenet_ai_0419_sdv4 for stable_diffusion_v1_4 based on previous check
-  root_dir: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0419_sdv4/"
-  eval_split: "val" # or "test" if available. GenImageDataset expects "train" or "val"
-  num_samples_eval: 1000 # Number of samples to randomly evaluate from the dataset. Set to null or remove to use all.
-  class_to_idx: # Should match the dataset's structure and desired labels
+# Dataset Configuration Defaults
+dataset_defaults:
+  eval_split: "val" # or "test" if available.
+  num_samples_eval: 1000 # Default number of samples to evaluate from the dataset (sum of all classes).
+  class_to_idx: # Default class mapping
     nature: 0 # Real image
     ai: 1     # AI-generated image
+
+# List of Datasets for Evaluation
+evaluation_datasets:
+  - name: "ImageNet-SDv4_Val"
+    root_dir: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0419_sdv4/"
+    eval_split: "val" 
+    # class_to_idx: uses default
+    # num_samples_eval: uses default
+
+  - name: "ImageNet-WuKong_Val"
+    root_dir: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0424_wukong/"
+    eval_split: "val"
+    # class_to_idx: uses default
+    # num_samples_eval: uses default
+
+  - name: "ImageNet-GLIDE_Val"
+    root_dir: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_glide/"
+    eval_split: "val"
+    # class_to_idx: uses default
+    # num_samples_eval: uses default
+    
+  - name: "Chameleon_Test"
+    root_dir: "/raid/dannyliu/dataset/GAI_Dataset/Chameleon/"
+    eval_split: "test" # This dataset has a 'test' split
+    class_to_idx: # Custom mapping for Chameleon dataset folder names to labels
+      "0_real": 0   # Maps folder '0_real' to label 0 (nature/real)
+      "1_fake": 1   # Maps folder '1_fake' to label 1 (ai/fake)
+    # num_samples_eval: uses default (1000 total from 0_real and 1_fake combined)
 
 # VLM and Prompt Strategy Configuration
 vlm:

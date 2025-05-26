@@ -51,7 +51,25 @@ This directory (`src/experiments/`) contains scripts for running various experim
   ```bash
   python src/experiments/zero_shot_vlm_eval.py --config configs/vlm_zero_shot_custom.yaml
   ```
-  This will run the evaluation for all VLM configurations listed in `vlm_zero_shot_custom.yaml`. Results for each VLM will be saved in a separate subdirectory under the specified `output_dir_base`.
+  This will run the evaluation for all VLM configurations listed in `vlm_zero_shot_custom.yaml` and for all datasets specified in `evaluation_datasets`. Results for each model-dataset combination will be saved in a separate subdirectory under `output_dir_base / <model_name> / <dataset_name>`. 
+
+  **Multi-Dataset Evaluation Configuration**:
+  The `configs/vlm_zero_shot_custom.yaml` (and similar configurations) can be set up to evaluate models on multiple datasets in a single run. This is achieved through two main keys at the root of the YAML:
+  - `dataset_defaults`: This section defines common parameters that will be applied to all datasets unless overridden. It typically includes:
+    - `eval_split`: Default split (e.g., "val", "test").
+    - `num_samples_eval`: Default number of samples to evaluate from the entire dataset (sum across classes). For example, 1000 means 1000 images will be randomly sampled from the specified split of the dataset.
+    - `class_to_idx`: Default mapping from class folder names to integer labels (e.g., `nature: 0`, `ai: 1`).
+  - `evaluation_datasets`: This is a list, where each item represents a specific dataset to evaluate.
+    - `name`: A unique name for the dataset (e.g., "ImageNet-SDv4_Val"). This name is used in output paths.
+    - `root_dir`: The root directory of the dataset. The script expects subfolders named according to `class_to_idx` keys within the `root_dir/eval_split/` path.
+    - `eval_split` (optional): Overrides the default split for this specific dataset.
+    - `num_samples_eval` (optional): Overrides the default number of samples for this specific dataset.
+    - `class_to_idx` (optional): Overrides the default class mapping. This is particularly useful for datasets with different folder naming conventions. For example, for a dataset like Chameleon with folders `0_real` and `1_fake` inside the `test` split, you might set `eval_split: "test"` and `class_to_idx: {"0_real": 0, "1_fake": 1}`. The script will then look for images in `<root_dir>/test/0_real/` and `<root_dir>/test/1_fake/` and assign them labels 0 and 1 respectively.
+
+  The script iterates through each model defined in `vlm.model_configs` and then, for each model, iterates through each dataset in `evaluation_datasets`, applying the merged default and specific dataset configurations.
+
+  **Robust Dataset Configuration Handling**:
+  To better support diverse dataset structures (like Chameleon with its unique folder names and split) and ensure that specific dataset configurations correctly override defaults, the script's logic for resolving parameters like `eval_split`, `class_to_idx`, and `num_samples_eval` for each dataset has been made more explicit. It now clearly prioritizes settings defined directly under a dataset entry in `evaluation_datasets` over those in `dataset_defaults`.
 
 - **`vlm_finetune_and_infer.py`**:
   (Details about this script can be added here once its functionality is finalized and documented.)

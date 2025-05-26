@@ -8,6 +8,10 @@ class InstructBlipModelWrapper(BaseVLM):
     """
     Wrapper for the InstructBLIP model from Hugging Face.
     """
+    def __init__(self, model_name: str, config: Any = None):
+        super().__init__(model_name, config)
+        self.prompt_strategy = None # Initialize prompt_strategy
+
     def _load_model(self):
         model_id = self.config.get("model_id", "Salesforce/instructblip-vicuna-7b") # Example, choose appropriate model
         try:

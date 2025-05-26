@@ -8,6 +8,10 @@ class CLIPModelWrapper(BaseVLM):
     """
     Wrapper for the CLIP model from Hugging Face.
     """
+    def __init__(self, model_name: str, config: Any = None):
+        super().__init__(model_name, config)
+        self.prompt_strategy = None # Initialize prompt_strategy
+
     def _load_model(self):
         """
         Loads the pre-trained CLIP model and processor.
