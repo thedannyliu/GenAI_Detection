@@ -343,10 +343,13 @@ def run_evaluation_for_model_on_dataset(model_name_unique: str, model_config_dic
 
 def setup_dataset_and_loader(dataset_cfg_for_current_run, global_cfg, split='val'):
     print(f"Setting up dataset for split: {split} from dataset config: {dataset_cfg_for_current_run.get('name', 'Unknown Dataset')}")
-    data_root_dir = dataset_cfg_for_current_run['root_dir'] # This comes from the specific dataset entry
-    class_to_idx = dataset_cfg_for_current_run.get('class_to_idx') # class_to_idx from merged config
+    data_root_dir = dataset_cfg_for_current_run['root_dir']
+    class_to_idx = dataset_cfg_for_current_run.get('class_to_idx')
     
-    # Ensure the split-specific directory exists (e.g., data_root_dir/val)
+    # Get num_samples_per_class for dataset initialization
+    # This new parameter allows specifying how many samples to load *per class* directly from GenImageDataset
+    num_samples_per_class_to_load = dataset_cfg_for_current_run.get('num_samples_per_class_eval', None)
+
     split_dir = os.path.join(data_root_dir, split)
     if not os.path.exists(split_dir) or not os.path.isdir(split_dir):
         print(f"Error: Split directory {split_dir} does not exist or is not a directory.")
@@ -356,36 +359,49 @@ def setup_dataset_and_loader(dataset_cfg_for_current_run, global_cfg, split='val
         root_dir=data_root_dir, 
         split=split, 
         class_to_idx=class_to_idx,
-        transform=None 
+        transform=None,
+        num_samples_per_class=num_samples_per_class_to_load, # Pass this to GenImageDataset
+        seed=global_cfg.get('random_seed', 42) # Ensure GenImageDataset also uses the seed for its sampling
     )
 
     if not full_dataset.image_paths:
         print(f"Error: Full dataset for split '{split}' is empty after initialization. Check dataset structure and paths.")
         return None, None
     print(f"Full dataset for '{split}' initialized with {len(full_dataset.image_paths)} images.")
-    # print(f"Example labels from full_dataset: {full_dataset.labels[:10]}")
-    # print(f"Class to index map used by dataset: {full_dataset.class_to_idx}")
-    # --- Added detailed debug prints for dataset contents ---
-    # print(f"Debug Dataset Check: Root directory used: {full_dataset.root_dir}")
-    # print(f"Debug Dataset Check: Split used: {full_dataset.split}")
-    # print(f"Debug Dataset Check: Class to index map in dataset: {full_dataset.class_to_idx}")
-    # if hasattr(full_dataset, 'image_paths') and full_dataset.image_paths:
-    #     print(f"Debug Dataset Check: Example image paths (first 3): {full_dataset.image_paths[:3]}")
-    # else:
-    #     print("Debug Dataset Check: full_dataset.image_paths is empty or not available.")
-    # if hasattr(full_dataset, 'labels') and full_dataset.labels:
-    #     print(f"Debug Dataset Check: Example labels (first 3): {full_dataset.labels[:3]}")
-    #     unique_labels_debug, counts_debug = np.unique(np.array(full_dataset.labels), return_counts=True)
-    #     print(f"Debug Dataset Check: Initial class distribution in full_dataset (from VLMGenImageDataset directly): {dict(zip(unique_labels_debug, counts_debug))}")
-    # else:
-    #     print("Debug Dataset Check: full_dataset.labels is empty or not available for initial distribution check.")
-    # --- End of added debug prints ---
+    if num_samples_per_class_to_load:
+        print(f"  (Targeted {num_samples_per_class_to_load} samples per class during initial load)")
 
     eval_dataset_for_loader = full_dataset
-    num_samples_eval = dataset_cfg_for_current_run.get('num_samples_eval', None) # Use num_samples from the current dataset's config
+    
+    # num_samples_eval is the total number of samples for the final loader, potentially after a second round of sampling.
+    # If num_samples_per_class_to_load was used, full_dataset already reflects the desired sampled size based on per-class counts.
+    # In this case, we should generally use all of full_dataset unless num_samples_eval is explicitly set to something *smaller*
+    # than len(full_dataset), which would be an unusual override.
+    
+    num_samples_eval_total = dataset_cfg_for_current_run.get('num_samples_eval', None) 
 
-    if num_samples_eval is not None and num_samples_eval > 0 and num_samples_eval < len(full_dataset):
-        print(f"Attempting to sample {num_samples_eval} images from '{split}' split of {dataset_cfg_for_current_run.get('name')} ({len(full_dataset)} total)...")
+    # If num_samples_per_class_to_load was specified and resulted in a dataset,
+    # we typically want to use all of those loaded samples.
+    # The subsequent block for num_samples_eval_total should only apply if num_samples_per_class_to_load was NOT used,
+    # OR if num_samples_eval_total is meant to further subsample the already class-sampled dataset (less common).
+    
+    perform_secondary_sampling = True
+    if num_samples_per_class_to_load is not None and len(full_dataset.image_paths) > 0:
+        # If GenImageDataset already did per-class sampling, we likely don't want to sample again
+        # unless num_samples_eval_total is explicitly set to a *smaller* value.
+        print(f"Dataset was initialized with num_samples_per_class. Total loaded: {len(full_dataset)}.")
+        if num_samples_eval_total is not None and num_samples_eval_total < len(full_dataset):
+            print(f"  num_samples_eval_total ({num_samples_eval_total}) is set and is less than loaded. Will perform secondary stratified sampling.")
+            # Proceed with secondary sampling
+        elif num_samples_eval_total is not None and num_samples_eval_total >= len(full_dataset):
+            print(f"  num_samples_eval_total ({num_samples_eval_total}) is >= loaded. Using all loaded samples.")
+            perform_secondary_sampling = False
+        else: # num_samples_eval_total is None
+            print(f"  num_samples_eval_total is not set. Using all {len(full_dataset)} loaded samples (from per-class sampling).")
+            perform_secondary_sampling = False
+    
+    if perform_secondary_sampling and num_samples_eval_total is not None and num_samples_eval_total > 0 and num_samples_eval_total < len(full_dataset):
+        print(f"Attempting secondary sampling for {num_samples_eval_total} images from '{split}' split of {dataset_cfg_for_current_run.get('name')} ({len(full_dataset)} total currently loaded)...")
         labels_for_stratification = np.array(full_dataset.labels)
         unique_labels, counts = np.unique(labels_for_stratification, return_counts=True)
         print(f"Class distribution in full '{split}' set: {dict(zip(unique_labels, counts))}")
@@ -393,7 +409,7 @@ def setup_dataset_and_loader(dataset_cfg_for_current_run, global_cfg, split='val
         # Conditions for attempting stratification:
         # 1. More than one class present.
         # 2. Desired sample size is less than total samples.
-        # 3. Each class for stratification must have at least 2 samples if num_samples_eval is a fraction, 
+        # 3. Each class for stratification must have at least 2 samples if num_samples_eval_total is a fraction, 
         #    or more generally, enough samples for train_test_split to work without error.
         #    A common threshold is that n_splits (implicitly 1 for test_size) must be <= n_samples_per_class.
         #    So, each class should have at least 1 sample, but practically sklearn might need more for some scenarios.
@@ -405,11 +421,11 @@ def setup_dataset_and_loader(dataset_cfg_for_current_run, global_cfg, split='val
         elif any(c < 1 for c in counts): # Should not happen if dataset loaded correctly
             print("Warning: At least one class has zero samples. Cannot perform stratified sampling.")
             can_stratify = False
-        # If num_samples_eval is very small relative to class count, stratification might not be meaningful or possible
+        # If num_samples_eval_total is very small relative to class count, stratification might not be meaningful or possible
         # For train_test_split, stratify requires at least 2 members for any class if it's to be split.
-        # If we are taking num_samples_eval, then remaining is len(full_dataset) - num_samples_eval.
+        # If we are taking num_samples_eval_total, then remaining is len(full_dataset) - num_samples_eval_total.
         # Both parts need to respect class counts for stratify. Min count for any class for stratify is typically 2.
-        # If num_samples_eval means we are selecting a small subset, we need to ensure min(counts) is large enough.
+        # If num_samples_eval_total means we are selecting a small subset, we need to ensure min(counts) is large enough.
         # A simpler check: if any(counts < 2) and we are trying to stratify, it might be an issue.
         # For our purpose, we are forming one subset (the sampled one). 
         # sklearn stratify needs n_samples >= n_classes for y, and for test_size, it means each class in y must have at least n_splits (implicitly 1) examples.
@@ -420,7 +436,7 @@ def setup_dataset_and_loader(dataset_cfg_for_current_run, global_cfg, split='val
                 full_indices = np.arange(len(full_dataset))
                 _ , sampled_indices = train_test_split(
                     full_indices, 
-                    test_size=int(num_samples_eval), 
+                    test_size=int(num_samples_eval_total), 
                     stratify=labels_for_stratification, 
                     random_state=global_cfg.get('random_seed', None)
                 )
@@ -434,14 +450,14 @@ def setup_dataset_and_loader(dataset_cfg_for_current_run, global_cfg, split='val
                 can_stratify = False # Mark to fallback
         
         if not can_stratify: # Fallback to random sampling
-            print(f"Using random sampling for {num_samples_eval} samples.")
-            indices = np.random.choice(len(full_dataset), int(num_samples_eval), replace=False)
+            print(f"Using random sampling for {num_samples_eval_total} samples.")
+            indices = np.random.choice(len(full_dataset), int(num_samples_eval_total), replace=False)
             eval_dataset_for_loader = torch.utils.data.Subset(full_dataset, indices)
 
-    elif num_samples_eval is not None and num_samples_eval >= len(full_dataset):
-        print(f"num_samples_eval ({num_samples_eval}) is >= total dataset size ({len(full_dataset)}). Using full dataset for split '{split}'.")
-    elif num_samples_eval is None or num_samples_eval <= 0:
-        print(f"num_samples_eval not specified or invalid. Using full dataset for split '{split}'.")
+    elif perform_secondary_sampling and (num_samples_eval_total is None or num_samples_eval_total <= 0): # Check perform_secondary_sampling here
+        print(f"num_samples_eval_total not specified or invalid. Using full loaded dataset for split '{split}'.")
+    # If num_samples_per_class_to_load was used and we decided not to do secondary sampling, this path is also hit.
+    # The eval_dataset_for_loader is already full_dataset.
 
     if len(eval_dataset_for_loader) == 0:
         print(f"Error: Dataset for loader (split '{split}') is empty after sampling/selection. Cannot create DataLoader.")

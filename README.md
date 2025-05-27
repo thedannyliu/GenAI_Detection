@@ -195,6 +195,109 @@ We thank the creators of the genimage dataset and the open-source community for 
 -   **Key Features**: Computationally efficient fine-tuning, leverages strong CLIP features, allows for robust evaluation across datasets.
 -   **Further Details**: See documentation within `src/training/README.md` and `src/evaluation/README.md`.
 
+## Troubleshooting and Setup Notes for InstructBLIP LoRA 8-bit Fine-tuning
+
+This section documents the steps and issues encountered while setting up LoRA fine-tuning for the `Salesforce/instructblip-vicuna-7b` model with 8-bit quantization, aiming to enable training on a single GPU with limited memory (e.g., 40GB A100).
+
+### Initial Problem
+The primary goal was to enable a previously中断 (interrupted) training process (`src/training/train_instructblip.py`) to run reliably from start to finish, especially for large datasets and epochs. The initial attempts with full precision or even standard LoRA with `bfloat16` on a 40GB A100 GPU led to CUDA Out-of-Memory (OOM) errors, even with very small batch sizes.
+
+### Debugging Steps and Solutions Attempted
+
+1.  **Reducing Data and Training Scale:**
+    *   Modified `configs/train_instructblip_config.yaml`:
+        *   `data.num_train_samples`, `data.num_val_samples`, `data.num_test_samples` were significantly reduced (e.g., to 10).
+        *   `training.epochs` reduced (e.g., to 2).
+        *   `training.early_stopping_patience` reduced.
+    *   **Outcome:** Still encountered OOM errors, indicating the base model size was the main issue.
+
+2.  **Investigating `DynamicCache` Error with `pad_across_processes`:**
+    *   An error `TypeError: Unsupported types (<class 'transformers.cache_utils.DynamicCache'>) passed to \`_pad_across_processes\`` occurred during evaluation.
+    *   **Solution Attempt 1:** Ensured `model.config.use_cache = False` was set after loading the model.
+    *   **Solution Attempt 2:** Overrode `prediction_step` in the custom `Trainer` to ensure only logits tensors were passed, not complex model outputs containing `DynamicCache`.
+    *   **Outcome:** These changes helped resolve the `DynamicCache` error, but OOM errors persisted.
+
+3.  **Addressing `AttributeError: 'TrainingArguments' object has no attribute 'predict_with_generate'`:**
+    *   This error appeared in the custom `prediction_step` due to an incorrect check for `self.args.predict_with_generate`.
+    *   **Solution:** Simplified `prediction_step` to rely on `compute_loss` for obtaining logits, removing the problematic attribute check.
+    *   **Outcome:** Resolved the `AttributeError`, but OOM remained the primary blocker.
+
+4.  **CUDA Out of Memory (OOM) on Specified GPU:**
+    *   Despite setting `CUDA_VISIBLE_DEVICES=2` and the script confirming usage of the target GPU, OOM errors (referring to PyTorch's internal `GPU 0`, which was correctly mapped to the physical GPU 2) persisted.
+    *   **Initial thought:** Confusion about GPU indexing.
+    *   **Clarification:** The script *was* running on the correct physical GPU (GPU 2), but the model itself, even with a batch size of 10 or 4, was too large for 40GB VRAM in `bfloat16`.
+    *   **Solution Attempts:**
+        *   Reduced `training.batch_size` in `configs/train_instructblip_config.yaml` progressively from 16 down to 4, then to 1.
+        *   Set environment variable `export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`.
+        *   Ensured `environment.gpu_id` in the config also pointed to the correct GPU ID (e.g., 2) as a fallback.
+    *   **Outcome:** Even with `batch_size: 1`, OOM errors continued, indicating the need for more aggressive memory-saving techniques. The error traces often pointed to operations like `logits.float()` during loss computation or `softmax` within model components.
+
+5.  **Introducing 8-bit Quantization with `bitsandbytes`:**
+    *   This was identified as a key strategy to significantly reduce memory footprint.
+    *   **Modification 1 (Initial 8-bit setup):**
+        *   Added `bitsandbytes` to requirements.
+        *   In `src/training/train_instructblip.py`, modified model loading:
+            ```python
+            model = InstructBlipForConditionalGeneration.from_pretrained(
+                model_config['name_pretrained'],
+                low_cpu_mem_usage=True,
+                device_map="auto",
+                load_in_8bit=True
+            )
+            ```
+    *   **Encountered `ValueError: You cannot perform fine-tuning on purely quantized models...`**:
+        *   This error arises because the `Trainer` detects a fully quantized model but expects PEFT adapters for fine-tuning.
+    *   **Modification 2 (Adding `prepare_model_for_kbit_training`):**
+        *   Imported `prepare_model_for_kbit_training` from `peft`.
+        *   Called `model = prepare_model_for_kbit_training(model)` after loading the 8-bit model and before applying LoRA.
+        *   Initially included `use_gradient_checkpointing` argument, then removed it as it's deprecated and handled by `TrainingArguments`.
+    *   **Encountered `NameError: name 'peft' is not defined`**:
+        *   Caused by an incorrect `hasattr(peft, ...)` check.
+        *   **Solution:** Removed the `hasattr` check and called `prepare_model_for_kbit_training` directly.
+    *   **Outcome (`ValueError` persisted):** The `ValueError` about fine-tuning purely quantized models remained even after `prepare_model_for_kbit_training`. Debug logs showed:
+        *   `Is model a PEFT model after LoRA? False`
+        *   `Is model.language_model a PEFT model after LoRA? True`
+        This indicated that the top-level `model` object passed to the `Trainer` was not recognized as a `PeftModel`, even though its `language_model` sub-component was correctly wrapped by PEFT.
+
+6.  **Explicitly Setting `requires_grad = False` for Non-LoRA Parameters:**
+    *   To further ensure the `Trainer` understands that only LoRA adapters are trainable:
+        ```python
+        if model_config['finetune_method'] == 'lora':
+            # ... (apply LoRA to model.language_model) ...
+            logger.info("Iterating over model parameters to set requires_grad for non-LoRA parts...")
+            for name, param in model.named_parameters():
+                if '.lora_' not in name:
+                    param.requires_grad = False
+            logger.info("Finished setting requires_grad for non-LoRA parameters.")
+        ```
+    *   **Outcome (`ValueError` persisted):** This explicit step, while good practice, did not resolve the `Trainer`'s `ValueError`.
+
+7.  **Current Approach: Using `BitsAndBytesConfig` for Quantization (Following Deprecation Warnings):**
+    *   The `load_in_8bit` argument is deprecated. The recommended way is to use `quantization_config` with a `BitsAndBytesConfig` object.
+    *   Modified model loading in `src/training/train_instructblip.py`:
+        ```python
+        from transformers import BitsAndBytesConfig
+        # ...
+        quantization_config = BitsAndBytesConfig(
+            load_in_8bit=True,
+            # bnb_8bit_compute_dtype=torch.bfloat16 # Can be added if mixed precision compute is desired
+        )
+        model = InstructBlipForConditionalGeneration.from_pretrained(
+            model_config['name_pretrained'],
+            quantization_config=quantization_config,
+            low_cpu_mem_usage=True,
+            device_map="auto"
+        )
+        ```
+    *   **Status:** This is the current state. The next step is to test this configuration to see if it resolves the `ValueError` and allows training to proceed without OOM errors.
+
+### Key Learnings and Next Steps
+
+*   Fine-tuning large models like InstructBLIP-Vicuna-7B requires aggressive memory optimization, with 8-bit quantization being essential for single GPU (40GB) operation.
+*   The interaction between `transformers.Trainer`, PEFT-modified models (especially when only a sub-module is adapted), and k-bit quantization can be tricky. The `Trainer` needs to correctly identify that the model, despite its base being quantized, has trainable adapter layers.
+*   Ensuring the top-level model object passed to the `Trainer` is somehow recognized or treated as a PEFT-compatible model for fine-tuning is crucial.
+*   If the `ValueError` persists, further investigation into how `Trainer` checks for "purely quantized models" versus PEFT-adapted quantized models will be needed. This might involve looking at PEFT's `PeftModel` class hierarchy or specific flags/attributes the `Trainer` expects.
+
 *(The content below this line seems to be a duplicate from a merge or an older version and has been consolidated above or is part of the general project description. It will be removed for clarity.)*
 
 ---

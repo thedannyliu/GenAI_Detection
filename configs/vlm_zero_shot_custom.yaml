@@ -45,6 +45,7 @@ evaluation_datasets:
     class_to_idx: # Custom mapping for Chameleon dataset folder names to labels
       "0_real": 0   # Maps folder '0_real' to label 0 (nature/real)
       "1_fake": 1   # Maps folder '1_fake' to label 1 (ai/fake)
+    num_samples_per_class_eval: 500
     # num_samples_eval: uses default (1000 total from 0_real and 1_fake combined)
 
 # VLM and Prompt Strategy Configuration

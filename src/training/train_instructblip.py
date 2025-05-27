@@ -10,7 +10,7 @@ Usage:
     python train_instructblip_lora.py --config configs/train_instructblip_config.yaml
 
 Requirements:
-    pip install transformers torch torchvision peft datasets accelerate pillow pyyaml
+    pip install transformers torch torchvision peft datasets accelerate pillow pyyaml bitsandbytes
 """
 
 import argparse
@@ -29,9 +29,12 @@ from transformers import (
     InstructBlipProcessor,
     TrainingArguments,
     Trainer,
-    EarlyStoppingCallback
+    EarlyStoppingCallback,
+    PreTrainedModel,
+    BitsAndBytesConfig
 )
-from peft import LoraConfig, get_peft_model, TaskType
+from transformers.modeling_outputs import ModelOutput
+from peft import LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training, PeftModel
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 
 # Setup logging
@@ -322,6 +325,68 @@ def create_output_directory(config: Dict[str, Any]) -> Path:
 class CustomTrainer(Trainer):
     """Custom trainer to handle InstructBLIP-specific issues."""
     
+    def prediction_step(
+        self,
+        model: PreTrainedModel,
+        inputs: Dict[str, torch.Tensor],
+        prediction_loss_only: bool,
+        ignore_keys: List[str] = None,
+    ) -> Tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
+        """
+        Perform an evaluation step on `model` using `inputs`.
+        Args:
+            model (`nn.Module`):
+                The model to evaluate.
+            inputs (`Dict[str, Union[torch.Tensor, Any]]`):
+                The inputs and targets of the model.
+            prediction_loss_only (`bool`):
+                Whether or not to return the loss only.
+            ignore_keys (`List[str]`, *optional*):
+                A list of keys in the output of your model (if it is a dictionary) that should be ignored when
+                gathering predictions.
+        Return:
+            Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]: A tuple with the loss,
+            logits and labels (each being optional).
+        """
+        
+        # Always use compute_loss to get outputs, as it's designed to handle model outputs correctly.
+        # model.config.use_cache = False should prevent DynamicCache issues from model output.
+        loss, model_outputs = self.compute_loss(model, inputs, return_outputs=True)
+
+        # Extract logits. 
+        # In your compute_loss, `model_outputs` is the direct output from `model(**inputs)`.
+        # For InstructBlipForConditionalGeneration, this output object should have a .logits attribute.
+        if hasattr(model_outputs, 'logits') and model_outputs.logits is not None:
+            logits = model_outputs.logits
+        elif isinstance(model_outputs, tuple) and len(model_outputs) > 1 and hasattr(model_outputs[1], 'logits'):
+            # This case might occur if compute_loss was structured differently, e.g. returning (loss, (sub_loss, sub_outputs_obj))
+            # For your current compute_loss, model_outputs is the raw model output object.
+            logits = model_outputs[1].logits # Should not be hit with current compute_loss
+        elif isinstance(model_outputs, torch.Tensor):
+            # This would be if the model_outputs *is* the logits tensor directly (unlikely for this model type)
+            logits = model_outputs
+        else:
+            # Fallback if logits are not found as expected.
+            logger.error("Could not reliably extract logits from model output in prediction_step.")
+            # Setting logits to None might cause issues downstream, but it's better than crashing here.
+            # Or, raise an error if logits are essential and not found.
+            # For now, let's try to see if a part of the output can be interpreted as logits if it's a tuple/list.
+            # This part is heuristic and might need adjustment based on actual model_outputs structure if the above fails.
+            if isinstance(model_outputs, (list, tuple)) and len(model_outputs) > 1 and isinstance(model_outputs[1], torch.Tensor):
+                # Assuming the second element could be logits if the primary extraction failed.
+                # This was in the original problematic auto-generated code, keeping it as a last resort with a warning.
+                logger.warning("Attempting to use the second element of model_outputs as logits. This is a fallback.")
+                logits = model_outputs[1]
+            else:
+                logits = None # Or raise an error: raise ValueError("Logits not found in model output")
+        
+        if prediction_loss_only:
+            return (loss, None, None)
+
+        labels = inputs.get("labels")
+        
+        return (loss, logits, labels)
+
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         """Custom loss computation to handle batch size mismatches."""
         
@@ -467,14 +532,22 @@ def main():
         processor.tokenizer.pad_token = processor.tokenizer.eos_token
     
     # Load model directly to the correct device
+    quantization_config = BitsAndBytesConfig(
+        load_in_8bit=True,
+        # bnb_8bit_compute_dtype=torch.bfloat16 # Optional: if you want computations in bfloat16
+    )
+    
     model = InstructBlipForConditionalGeneration.from_pretrained(
         model_config['name_pretrained'],
-        torch_dtype=torch.bfloat16,
+        quantization_config=quantization_config,
         low_cpu_mem_usage=True,
-        device_map={"" : device}  # This ensures model loads directly to our device
+        device_map="auto" # device_map="auto" is generally recommended with quantization
     )
     model.config.use_cache = False # Prevent DynamicCache issues during evaluation
-    
+
+    # Prepare model for k-bit training (important for 8-bit + LoRA)
+    model = prepare_model_for_kbit_training(model)
+
     # Setup LoRA
     if model_config['finetune_method'] == 'lora':
         lora_config = LoraConfig(
@@ -491,7 +564,23 @@ def main():
         model.language_model = get_peft_model(model.language_model, lora_config)
         model.language_model.print_trainable_parameters()
         logger.info("LoRA configuration applied to language model")
-    
+
+        # Explicitly set requires_grad for all other parameters of the base model to False
+        # This is crucial for 8-bit models to ensure only adapters are trained.
+        logger.info("Iterating over model parameters to set requires_grad for non-LoRA parts...")
+        for name, param in model.named_parameters():
+            if '.lora_' not in name:
+                param.requires_grad = False
+            # else:
+            #     logger.debug(f"LoRA parameter {name} will have requires_grad={param.requires_grad}") # Optional: log LoRA params too
+        logger.info("Finished setting requires_grad for non-LoRA parameters.")
+
+    # Log model type for debugging PEFT integration
+    logger.info(f"Is model a PEFT model after LoRA? {isinstance(model, PeftModel)}")
+    logger.info(f"Is model.language_model a PEFT model after LoRA? {isinstance(model.language_model, PeftModel)}")
+    logger.info(f"Model class after LoRA: {model.__class__}")
+    logger.info(f"Language model class after LoRA: {model.language_model.__class__}")
+
     # Create datasets
     train_dataset = AIImageDataset(
         real_train, ai_train, processor, training_config['max_target_token_length']

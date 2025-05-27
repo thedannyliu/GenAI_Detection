@@ -5,7 +5,7 @@ data:
   train_path: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0419_sdv4/train" # 訓練資料集的路徑
   val_test_path: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0419_sdv4/val"  # 驗證與測試資料集的路徑
   num_train_samples: 10000                                                            # 訓練樣本數量
-  num_val_samples: 1000                                                               # 驗證樣本數量
+  num_val_samples: 1000                                                              # 驗證樣本數量
   num_test_samples: 1000                                                              # 測試樣本數量
   seed: 42                                                                            # 隨機種子
 
@@ -23,22 +23,22 @@ model:
 # 訓練設定 (Training Settings)
 training:
   should_train: True                                                                  # 是否執行訓練
-  epochs: 1000                                                                          # 訓練的週期數（降低以避免過度訓練）
-  batch_size: 16                                                                       # 訓練批次大小（降低以節省記憶體）
+  epochs: 2000                                                                          # 訓練的週期數（降低以避免過度訓練）
+  batch_size: 32                                                                       # 訓練批次大小（降低以節省記憶體）
   learning_rate_full: 5.0e-5                                                          # "full" 微調時的學習率
   learning_rate_lora: 1.0e-4                                                          # "lora" 微調時的學習率
-  warmup_steps: 100                                                                   # 學習率預熱步數
+  warmup_steps: 150                                                                   # 學習率預熱步數
   weight_decay: 0.01                                                                  # 權重衰減率
   max_target_token_length: 16                                                         # 生成目標文本的最大 token 長度（降低）
   prompt_config_idx: 0                                                                # 提示配置索引
   evaluation_strategy: "epoch"                                                        # 評估策略
   save_strategy: "epoch"                                                              # 儲存策略
   save_total_limit: 3                                                                 # 最多儲存的檢查點數量
-  early_stopping_patience: 50                                                          # 提早停止的容忍度（降低）
+  early_stopping_patience: 25                                                          # 提早停止的容忍度（降低）
   early_stopping_threshold: 0.001                                                     # 提早停止的改善閾值
   gradient_accumulation_steps: 4                                                      # 梯度累積步數（增加有效批次大小）
   use_bfloat16: true                                                                  # 使用 bfloat16 精度
-  gradient_checkpointing: true                                                        # 啟用梯度檢查點以節省記憶體
+  gradient_checkpointing: false                                                        # 啟用梯度檢查點以節省記憶體
 
 # 輸出設定 (Output Settings)
 output:
