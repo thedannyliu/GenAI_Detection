@@ -2,49 +2,52 @@
 
 # 資料設定 (Data Settings)
 data:
-  train_path: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0419_sdv4/train" # 訓練資料集的路徑
-  val_test_path: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0419_sdv4/val"  # 驗證與測試資料集的路徑
-  num_train_samples: 10000                                                            # 訓練樣本數量
-  num_val_samples: 1000                                                              # 驗證樣本數量
-  num_test_samples: 1000                                                              # 測試樣本數量
-  seed: 42                                                                            # 隨機種子
+  train_path: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0419_sdv4/train"
+  val_test_path: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0419_sdv4/val"
+  num_train_samples: 200                    # 稍微增加樣本數提升訓練效果
+  num_val_samples: 100                      # 增加驗證樣本
+  num_test_samples: 50
+  seed: 42
 
 # 模型設定 (Model Settings)
 model:
-  name_pretrained: "Salesforce/instructblip-vicuna-7b"                                # 預訓練模型的名稱或路徑
-  finetune_method: "lora"                                                             # 微調方法："lora" 或 "full"
-  # LoRA 微調參數
+  name_pretrained: "Salesforce/instructblip-vicuna-7b"
+  finetune_method: "lora"
   lora_params:
-    r: 16                                                                             # LoRA 的秩
-    alpha: 32                                                                         # LoRA 的 alpha 縮放因子
-    dropout: 0.05                                                                     # LoRA 層的 dropout 比率
-    target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]  # 目標模組
+    r: 16                                     # 稍微增加rank以獲得更好的表現
+    alpha: 32                                 # 對應調整alpha (通常是r的2倍)
+    dropout: 0.05                             # 降低dropout
+    target_modules: ["q_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
 # 訓練設定 (Training Settings)
 training:
-  should_train: True                                                                  # 是否執行訓練
-  epochs: 2000                                                                          # 訓練的週期數（降低以避免過度訓練）
-  batch_size: 32                                                                       # 訓練批次大小（降低以節省記憶體）
-  learning_rate_full: 5.0e-5                                                          # "full" 微調時的學習率
-  learning_rate_lora: 1.0e-4                                                          # "lora" 微調時的學習率
-  warmup_steps: 150                                                                   # 學習率預熱步數
-  weight_decay: 0.01                                                                  # 權重衰減率
-  max_target_token_length: 16                                                         # 生成目標文本的最大 token 長度（降低）
-  prompt_config_idx: 0                                                                # 提示配置索引
-  evaluation_strategy: "epoch"                                                        # 評估策略
-  save_strategy: "epoch"                                                              # 儲存策略
-  save_total_limit: 3                                                                 # 最多儲存的檢查點數量
-  early_stopping_patience: 25                                                          # 提早停止的容忍度（降低）
-  early_stopping_threshold: 0.001                                                     # 提早停止的改善閾值
-  gradient_accumulation_steps: 4                                                      # 梯度累積步數（增加有效批次大小）
-  use_bfloat16: true                                                                  # 使用 bfloat16 精度
-  gradient_checkpointing: false                                                        # 啟用梯度檢查點以節省記憶體
+  should_train: true
+  epochs: 5                                   # 增加epoch數
+  batch_size: 2                               # 稍微增加batch size (如果記憶體允許)
+  eval_batch_size: 2                          # 對應增加評估batch size
+  learning_rate_full: 5.0e-5
+  learning_rate_lora: 1.0e-4                  # 稍微降低學習率提升穩定性
+  warmup_steps: 100                           # 增加warmup steps
+  weight_decay: 0.001                         # 降低weight decay
+  max_target_token_length: 16
+  prompt_config_idx: 0
+  evaluation_strategy: "steps"
+  eval_steps: 50                              # 調整評估頻率
+  save_strategy: "steps"
+  save_steps: 50                              # 調整保存頻率
+  save_total_limit: 5                         # 保留更多檢查點
+  early_stopping_patience: 5                 # 降低耐心值以避免過度訓練
+  early_stopping_threshold: 0.001
+  gradient_accumulation_steps: 4              # 降低梯度累積步數
+  use_bfloat16: true
+  gradient_checkpointing: false
+  logging_steps: 10                           # 調整日誌頻率
 
 # 輸出設定 (Output Settings)
 output:
-  base_results_dir_root: "results/instructblip_finetune"                              # 儲存結果的基礎根目錄
+  base_results_dir_root: "results/instructblip_finetune"
 
 # 環境設定 (Environment Settings)
 environment:
-  gpu_id: 2                                                                           # 指定使用的 GPU ID
-  disable_wandb: true                                                                 # 禁用 wandb 追蹤
+  gpu_id: 2
+  disable_wandb: true
