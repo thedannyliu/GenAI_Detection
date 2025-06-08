@@ -1,5 +1,8 @@
 # Experiments Module
 
+## Overview
+Scripts for running zero-shot and fine-tuning experiments with different VLMs.
+
 This directory (`src/experiments/`) contains scripts for running various experiments, such as model training, evaluation, and analysis related to AI-generated image detection.
 
 ## Key Scripts

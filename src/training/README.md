@@ -1,5 +1,8 @@
 # Training Module
 
+## Overview
+Utilities and scripts for training classifiers and VLM adaptations.
+
 This module provides tools and utilities for training AI-generated image detection models. It implements the training loop, optimization strategies, and checkpointing.
 
 ## Key Components
@@ -400,6 +403,16 @@ This script fine-tunes an InstructBLIP model (e.g., `Salesforce/instructblip-vic
 -   **Usage**:
     ```bash
     python src/training/train_instructblip.py --config configs/your_instructblip_train_config.yaml
+    ```
+
+### InstructBLIP Prompt Tuning (`prompt_tuning_instructBLIP.py`)
+
+This script performs parameter-efficient prompt tuning on InstructBLIP.
+
+- **Configuration**: `configs/prompt_tuning_instructblip_config.yaml`
+- **Usage**:
+    ```bash
+    python src/training/prompt_tuning_instructBLIP.py --config configs/prompt_tuning_instructblip_config.yaml
     ```
 
 ## CLIP Linear Probing Training (`clip_linear_probe_train.py`)

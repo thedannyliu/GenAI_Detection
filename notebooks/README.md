@@ -1,5 +1,8 @@
 # Notebooks
 
+## Overview
+Exploratory Jupyter notebooks for data analysis and result visualization.
+
 This directory contains Jupyter notebooks for exploration, visualization and analysis related to AI-generated image detection using VLMs.
 
 ## Available Notebooks

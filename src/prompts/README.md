@@ -1,5 +1,8 @@
 # Prompt Strategies Module
 
+## Overview
+Classes that generate text prompts and questions for VLM evaluation.
+
 This directory (`src/prompts/`) defines strategies for generating text prompts to be used with Vision-Language Models (VLMs) for tasks like zero-shot image classification (e.g., distinguishing real vs. AI-generated images).
 
 ## Core Concepts

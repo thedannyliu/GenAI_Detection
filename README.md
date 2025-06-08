@@ -10,6 +10,7 @@ This repository contains the implementation of our research project on detecting
 - Fine-tuning strategies for improved detection
 - Prompt engineering and analysis
 - Parameter-efficient adaptation methods
+- Prompt tuning with InstructBLIP via `src/training/prompt_tuning_instructBLIP.py`
 - Comprehensive evaluation metrics
 - Explainability analysis using Grad-CAM
 - Robustness testing against image manipulations
@@ -81,6 +82,15 @@ To run the training:
 2.  **Run the training script**:
     ```bash
     python src/training/train_instructblip.py --config configs/my_instructblip_vicuna_train_config.yaml
+    ```
+
+**Prompt Tuning with InstructBLIP:**
+
+To adapt InstructBLIP using a small set of learnable prompt tokens:
+1.  Prepare a configuration (e.g., `configs/prompt_tuning_instructblip_config.yaml`).
+2.  Run the prompt tuning script:
+    ```bash
+    python src/training/prompt_tuning_instructBLIP.py --config configs/prompt_tuning_instructblip_config.yaml
     ```
 
 **For CNN-based Classification:**

@@ -1,5 +1,8 @@
 # GenImage Dataset Setup Instructions
 
+## Overview
+Instructions for downloading and organizing the GenImage dataset used by training scripts.
+
 This directory contains instructions for acquiring and setting up the genimage dataset for AI-generated image detection.
 
 ## About GenImage

@@ -1,5 +1,8 @@
 # Models Module
 
+## Overview
+Contains CNN baselines and Vision-Language Model wrappers used across experiments.
+
 This module contains model architectures for AI-generated image detection. It includes baseline CNN classifiers and Vision-Language Model (VLM) wrappers with support for zero-shot inference, fine-tuning, and parameter-efficient adaptation.
 
 ## Key Files and Structure

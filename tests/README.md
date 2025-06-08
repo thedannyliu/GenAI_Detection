@@ -1,5 +1,8 @@
 # Tests
 
+## Overview
+Unit tests ensuring model and data processing pipelines work as expected.
+
 This directory contains unit tests for the AI-Generated Image Detection project. The tests validate functionality, ensure code quality, and help catch regressions when modifying code.
 
 ## Test Structure
