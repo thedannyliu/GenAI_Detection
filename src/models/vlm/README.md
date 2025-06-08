@@ -1,5 +1,8 @@
 # Vision-Language Model (VLM) Submodule
 
+## Overview
+Wrappers around Hugging Face VLMs for zero-shot prediction and fine-tuning.
+
 This directory (`src/models/vlm/`) houses the core implementations for various Vision-Language Models, designed with extensibility and direct use of official pre-trained weights in mind.
 
 ## Key Design Principles

@@ -1,5 +1,8 @@
 # Utils Module
 
+## Overview
+Helper functions for logging, metrics, and configuration handling.
+
 This module provides utility functions and helpers used throughout the project. It contains tools for logging, metrics calculation, configuration management, and more.
 
 ## Key Components

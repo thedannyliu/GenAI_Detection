@@ -1,5 +1,8 @@
 # Data Processing Module
 
+## Overview
+Dataset loaders and preprocessing utilities for GenImage and related datasets.
+
 This module handles data loading and preprocessing for the GenImage dataset. It provides PyTorch Dataset classes and transformation utilities to prepare images for model training and evaluation.
 
 ## Key Components

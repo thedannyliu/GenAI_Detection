@@ -70,6 +70,7 @@ vlm:
 - `cnn_baseline.yaml`: Example configuration for a baseline CNN model.
 - `default.yaml`: May contain default parameters for the project.
 - `prompt_tuning.yaml`: Example configuration for prompt tuning experiments.
+- `prompt_tuning_instructblip_config.yaml`: Configuration for InstructBLIP prompt tuning.
 - `vlm_fine_tune.yaml`: Example configuration for VLM fine-tuning.
 - `vlm_zero_shot.yaml`: An older or alternative configuration for zero-shot VLM evaluation, possibly for a single model run.
 

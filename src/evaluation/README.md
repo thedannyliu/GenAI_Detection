@@ -1,5 +1,8 @@
 # Evaluation Module
 
+## Overview
+Scripts and helpers for measuring model performance across datasets.
+
 This module provides tools and functions for evaluating AI-generated image detection models. It handles metrics calculation, performance visualization, and analysis of model behavior.
 
 ## Key Components
