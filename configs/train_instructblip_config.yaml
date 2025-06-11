@@ -1,12 +1,11 @@
 # configs/train_instructblip_config.yaml
-
 # 資料設定 (Data Settings)
 data:
   train_path: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0419_sdv4/train"
   val_test_path: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0419_sdv4/val"
-  num_train_samples: 200                    # 稍微增加樣本數提升訓練效果
-  num_val_samples: 100                      # 增加驗證樣本
-  num_test_samples: 50
+  num_train_samples: 10000
+  num_val_samples: 1000
+  num_test_samples: 1000
   seed: 42
 
 # 模型設定 (Model Settings)
@@ -14,34 +13,34 @@ model:
   name_pretrained: "Salesforce/instructblip-vicuna-7b"
   finetune_method: "lora"
   lora_params:
-    r: 16                                     # 稍微增加rank以獲得更好的表現
-    alpha: 32                                 # 對應調整alpha (通常是r的2倍)
-    dropout: 0.05                             # 降低dropout
+    r: 8
+    alpha: 16
+    dropout: 0.1
     target_modules: ["q_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
 # 訓練設定 (Training Settings)
 training:
   should_train: true
-  epochs: 5                                   # 增加epoch數
-  batch_size: 2                               # 稍微增加batch size (如果記憶體允許)
-  eval_batch_size: 2                          # 對應增加評估batch size
+  epochs: 2000
+  batch_size: 32
+  eval_batch_size: 32
   learning_rate_full: 5.0e-5
-  learning_rate_lora: 1.0e-4                  # 稍微降低學習率提升穩定性
-  warmup_steps: 100                           # 增加warmup steps
-  weight_decay: 0.001                         # 降低weight decay
+  learning_rate_lora: 2.0e-4  # 稍微提高LoRA學習率
+  warmup_steps: 50
+  weight_decay: 0.01
   max_target_token_length: 16
   prompt_config_idx: 0
   evaluation_strategy: "steps"
-  eval_steps: 50                              # 調整評估頻率
+  eval_steps: 50
   save_strategy: "steps"
-  save_steps: 50                              # 調整保存頻率
-  save_total_limit: 5                         # 保留更多檢查點
-  early_stopping_patience: 5                 # 降低耐心值以避免過度訓練
+  save_steps: 50
+  save_total_limit: 3
+  early_stopping_patience: 30
   early_stopping_threshold: 0.001
-  gradient_accumulation_steps: 4              # 降低梯度累積步數
+  gradient_accumulation_steps: 8
   use_bfloat16: true
-  gradient_checkpointing: false
-  logging_steps: 10                           # 調整日誌頻率
+  gradient_checkpointing: false  # 保持false避免梯度問題
+  logging_steps: 20
 
 # 輸出設定 (Output Settings)
 output:

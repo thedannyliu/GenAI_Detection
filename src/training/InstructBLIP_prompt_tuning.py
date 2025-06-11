@@ -7,13 +7,12 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Union, Tuple
 import logging
-import functools
 
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
 from PIL import Image
-from peft import get_peft_model, LoraConfig, TaskType
+from peft import get_peft_model, PromptTuningConfig, TaskType
 from transformers import (
     InstructBlipProcessor,
     InstructBlipForConditionalGeneration,
@@ -36,6 +35,8 @@ YES, NO = "yes", "no"
 
 
 class AINatureDataset(Dataset):
+    """Dataset for AI vs Nature image classification with Prompt Tuning setup."""
+    
     def __init__(self, root: str, processor: InstructBlipProcessor, max_samples: Optional[int] = None):
         self.processor = processor
         self.samples = []
@@ -75,28 +76,17 @@ class AINatureDataset(Dataset):
         
         answer_text = YES if label == 1 else NO
         
-        # 分別處理輸入提示和完整回答
-        input_text = PROMPT
-        target_text = answer_text
+        # Create the full text sequence: prompt + answer
+        full_text = PROMPT + " " + answer_text
         
-        # 處理圖像和輸入文字
+        # Process image and full text together
         inputs = self.processor(
             images=img,
-            text=input_text,
+            text=full_text,
             return_tensors="pt",
             truncation=True,
             max_length=512,
             padding=False
-        )
-        
-        # 為目標答案創建標籤
-        target_inputs = self.processor.tokenizer(
-            target_text,
-            return_tensors="pt",
-            truncation=True,
-            max_length=64,
-            padding=False,
-            add_special_tokens=False
         )
         
         # Remove batch dimension
@@ -107,30 +97,37 @@ class AINatureDataset(Dataset):
             else:
                 processed_inputs[k] = v
         
-        # 創建標籤 - 只有答案部分需要計算損失
-        input_ids = processed_inputs["input_ids"]
-        target_ids = target_inputs["input_ids"].squeeze(0)
+        # For training, we need to create labels that mask the prompt part
+        # and only compute loss on the answer part
+        prompt_tokens = self.processor.tokenizer(
+            PROMPT, 
+            add_special_tokens=False, 
+            return_tensors="pt"
+        )["input_ids"].squeeze(0)
         
-        # 將輸入和目標拼接
-        full_input_ids = torch.cat([input_ids, target_ids], dim=0)
+        answer_tokens = self.processor.tokenizer(
+            answer_text, 
+            add_special_tokens=False, 
+            return_tensors="pt"
+        )["input_ids"].squeeze(0)
         
-        # 創建對應的attention mask
-        full_attention_mask = torch.ones_like(full_input_ids)
-        
-        # 創建標籤：輸入部分用-100屏蔽，只對答案部分計算損失
+        # Create labels: -100 for prompt tokens, actual tokens for answer
+        full_input_ids = processed_inputs["input_ids"]
         labels = torch.full_like(full_input_ids, -100)
-        labels[len(input_ids):] = target_ids  # 只有答案部分的標籤
         
-        processed_inputs.update({
-            "input_ids": full_input_ids,
-            "attention_mask": full_attention_mask,
-            "labels": labels
-        })
+        # Find where the answer starts in the full sequence
+        # This is a simplified approach - in practice you might want more robust alignment
+        prompt_length = len(prompt_tokens)
+        if len(full_input_ids) >= prompt_length + len(answer_tokens):
+            # Place answer tokens at the expected position
+            answer_start = len(full_input_ids) - len(answer_tokens)
+            labels[answer_start:] = answer_tokens
+        else:
+            # Fallback: just use the last few tokens as answer
+            labels[-len(answer_tokens):] = answer_tokens
         
-        # 處理其他可能的輸入
-        if "qformer_input_ids" in processed_inputs:
-            qformer_attention_mask = torch.ones_like(processed_inputs["qformer_input_ids"])
-            processed_inputs["qformer_attention_mask"] = qformer_attention_mask
+        processed_inputs["labels"] = labels
+        processed_inputs["answer_text"] = answer_text  # Keep for reference
         
         return processed_inputs
 
@@ -141,57 +138,55 @@ def load_yaml(path: str) -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
-def apply_lora_correctly(model: InstructBlipForConditionalGeneration, lora_cfg: Dict[str, Any]):
-    """Apply LoRA fine-tuning with proper gradient setup."""
+def apply_prompt_tuning_correctly(model: InstructBlipForConditionalGeneration, prompt_cfg: Dict[str, Any]):
+    """Apply Prompt Tuning with proper gradient setup."""
     
-    logger.info("Setting up LoRA configuration...")
+    logger.info("Setting up Prompt Tuning configuration...")
     
-    # Create LoRA config
-    lora_config = LoraConfig(
+    # Create Prompt Tuning config
+    prompt_config = PromptTuningConfig(
         task_type=TaskType.CAUSAL_LM,
-        r=lora_cfg["r"],
-        lora_alpha=lora_cfg["alpha"],
-        lora_dropout=lora_cfg["dropout"],
-        target_modules=lora_cfg["target_modules"],
-        bias="none",
-        use_rslora=False,
+        num_virtual_tokens=prompt_cfg["num_virtual_tokens"],
+        prompt_tuning_init=prompt_cfg["init_method"],
+        prompt_tuning_init_text=prompt_cfg.get("init_text", None),
+        tokenizer_name_or_path=prompt_cfg.get("tokenizer_name_or_path", None),
     )
     
     # First, freeze all parameters
     for param in model.parameters():
         param.requires_grad = False
     
-    # Apply LoRA only to the language model
-    logger.info("Applying LoRA to language model...")
-    model.language_model = get_peft_model(model.language_model, lora_config)
+    # Apply Prompt Tuning only to the language model
+    logger.info("Applying Prompt Tuning to language model...")
+    model.language_model = get_peft_model(model.language_model, prompt_config)
     
-    # Enable training mode for LoRA model
+    # Enable training mode for Prompt Tuning-enhanced model
     model.language_model.train()
     
-    # Explicitly enable gradients for LoRA parameters
-    lora_param_count = 0
+    # Explicitly enable gradients for prompt tuning parameters
+    prompt_param_count = 0
     for name, param in model.named_parameters():
-        if "lora_" in name.lower():
+        if "prompt_embeddings" in name.lower() or "prompt_encoder" in name.lower():
             param.requires_grad = True
-            lora_param_count += param.numel()
+            prompt_param_count += param.numel()
             logger.debug(f"Enabled gradients for: {name} - shape: {param.shape}")
     
     # Verify gradient setup
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total_params = sum(p.numel() for p in model.parameters())
     
-    logger.info(f"LoRA parameters found: {lora_param_count:,}")
+    logger.info(f"Prompt Tuning parameters found: {prompt_param_count:,}")
     logger.info(f"Total trainable parameters: {trainable_params:,} / {total_params:,} "
                 f"({100 * trainable_params / total_params:.2f}%)")
     
     if trainable_params == 0:
-        raise ValueError("No trainable parameters found! LoRA setup failed.")
+        raise ValueError("No trainable parameters found! Prompt Tuning setup failed.")
     
     return model
 
 
 class InstructBLIPDataCollator:
-    """Optimized data collator for InstructBLIP."""
+    """Fixed data collator for InstructBLIP with proper padding."""
     
     def __init__(self, processor):
         self.processor = processor
@@ -205,148 +200,166 @@ class InstructBLIPDataCollator:
     def __call__(self, features):
         batch = {}
         
-        # Collect all tensor fields
-        tensor_fields = ["input_ids", "attention_mask", "qformer_input_ids", 
-                        "qformer_attention_mask", "labels"]
-        
-        for field in tensor_fields:
-            if field in features[0]:
-                tensors = [f[field] for f in features]
-                if field == "labels":
-                    # Pad labels with -100
-                    padded = torch.nn.utils.rnn.pad_sequence(
-                        tensors, batch_first=True, padding_value=-100
-                    )
-                else:
-                    # Pad other sequences with appropriate padding values
-                    pad_value = self.tokenizer.pad_token_id if "input_ids" in field else 0
-                    padded = torch.nn.utils.rnn.pad_sequence(
-                        tensors, batch_first=True, padding_value=pad_value
-                    )
-                batch[field] = padded
-        
-        # Handle pixel values (stack them)
+        # Stack pixel values
         if "pixel_values" in features[0]:
             batch["pixel_values"] = torch.stack([f["pixel_values"] for f in features])
+        
+        # Handle text inputs with proper padding
+        text_fields = ["input_ids", "attention_mask"]
+        for field in text_fields:
+            if field in features[0]:
+                tensors = [f[field] for f in features]
+                pad_value = self.tokenizer.pad_token_id if field == "input_ids" else 0
+                padded = torch.nn.utils.rnn.pad_sequence(
+                    tensors, batch_first=True, padding_value=pad_value
+                )
+                batch[field] = padded
+        
+        # Handle Q-Former inputs
+        qformer_fields = ["qformer_input_ids", "qformer_attention_mask"]
+        for field in qformer_fields:
+            if field in features[0]:
+                tensors = [f[field] for f in features]
+                pad_value = self.tokenizer.pad_token_id if "input_ids" in field else 0
+                padded = torch.nn.utils.rnn.pad_sequence(
+                    tensors, batch_first=True, padding_value=pad_value
+                )
+                batch[field] = padded
+        
+        # Handle labels - FIXED VERSION
+        if "labels" in features[0]:
+            # Pad labels to match input_ids length
+            labels_list = [f["labels"] for f in features]
+            padded_labels = torch.nn.utils.rnn.pad_sequence(
+                labels_list, batch_first=True, padding_value=-100
+            )
+            batch["labels"] = padded_labels
         
         return batch
 
 
-def compute_accuracy_metrics(eval_preds, tokenizer):
-    """計算模型預測準確率的修正版本，基於解碼後的文字比較"""
+def compute_accuracy_metrics(eval_preds):
+    """Compute accuracy for the model predictions - FIXED VERSION."""
     predictions, labels = eval_preds
     
     if isinstance(predictions, tuple):
         predictions = predictions[0]
     
-    # 處理預測結果 (logits)
-    if predictions.ndim == 3:  # [batch, seq_len, vocab_size]
-        predicted_ids_all = np.argmax(predictions, axis=-1) # 取得所有位置的預測 token ID
-    else: # 如果直接是 token IDs
-        predicted_ids_all = predictions
-
-    # 獲取真實標籤 (排除 -100 的部分)
-    # labels 的形狀也是 [batch, seq_len]
-
-    batch_size = labels.shape[0]
-    sample_accuracies = []
-
-    for i in range(batch_size):
-        # 取得單個樣本的真實標籤和預測
-        label_ids_sample = labels[i]
-        pred_ids_sample = predicted_ids_all[i]
-
-        # 找出標籤中答案的部分 (非 -100)
-        actual_answer_token_ids = label_ids_sample[label_ids_sample != -100]
-        
-        if len(actual_answer_token_ids) == 0:
-            # 如果真實答案為空 (不應該發生在我們的案例中)
-            sample_accuracies.append(0.0) # 視為不正確
-            logger.debug(f"Sample {i}: No valid actual answer tokens found.")
-            continue
-
-        # 找出預測中對應答案位置的 token
-        # 我們需要知道答案在完整序列中的起始位置
-        # 在 AINatureDataset 中，labels 的 -100 部分對應輸入提示，非 -100 部分對應答案
-        # 所以，答案的長度是 len(actual_answer_token_ids)
-        # 答案的起始索引是 input_ids 的長度，結束索引是 input_ids 長度 + 答案長度
-        
-        # 預測的答案 token IDs
-        # 我們需要找到與 actual_answer_token_ids 長度相同的部分來比較
-        # 假設答案總是在序列的末尾，長度與 actual_answer_token_ids 相同
-        # 這是基於我們在 Dataset 中的構造方式：input_ids + target_ids -> full_input_ids
-        # labels 也是基於 full_input_ids，其中提示部分被 mask
-        # 因此，預測的 logits (或 ids) 也對應 full_input_ids 的結構
-        
-        # 找到有效標籤的起始和結束位置
-        valid_label_indices = np.where(label_ids_sample != -100)[0]
-        if len(valid_label_indices) == 0:
-            sample_accuracies.append(0.0)
-            logger.debug(f"Sample {i}: No valid label indices (all -100).")
-            continue
-            
-        start_answer_idx = valid_label_indices[0]
-        end_answer_idx = valid_label_indices[-1] + 1 # 切片不包含尾部
-        
-        # 從預測中提取對應答案位置的 token IDs
-        predicted_answer_token_ids = pred_ids_sample[start_answer_idx:end_answer_idx]
-
-        # 解碼真實答案和預測答案
-        # 使用 skip_special_tokens=True 來移除如 <eos> 等特殊 token
-        actual_answer_text = tokenizer.decode(actual_answer_token_ids, skip_special_tokens=True).strip().lower()
-        predicted_answer_text = tokenizer.decode(predicted_answer_token_ids, skip_special_tokens=True).strip().lower()
-        
-        # 確保在評估時打印詳細的樣本比較信息，但僅限前5個樣本
-        if i < 5:
-            logger.info(f"Sample {i}: Actual Text='{actual_answer_text}', Predicted Text='{predicted_answer_text}'")
-            logger.info(f"  Actual Tokens: {actual_answer_token_ids.tolist()}")
-            logger.info(f"  Predicted Tokens: {predicted_answer_token_ids.tolist()}")
-
-        # 比較解碼後的文字
-        if actual_answer_text == predicted_answer_text and actual_answer_text in [YES, NO]:
-            sample_accuracies.append(1.0)
-        else:
-            sample_accuracies.append(0.0)
-
-    if sample_accuracies:
-        accuracy = np.mean(sample_accuracies)
-    else:
-        accuracy = 0.0
-        logger.warning("No samples processed for accuracy computation in compute_accuracy_metrics.")
+    # Convert to numpy if they're tensors
+    if hasattr(predictions, 'cpu'):
+        predictions = predictions.cpu().numpy()
+    if hasattr(labels, 'cpu'):
+        labels = labels.cpu().numpy()
     
-    logger.info(f"Computed accuracy by text comparison: {accuracy:.4f} from {len(sample_accuracies)} samples")
-    return {"accuracy": float(accuracy)}
+    # Get predicted token IDs
+    if predictions.ndim == 3:  # [batch, seq_len, vocab_size]
+        predicted_ids = np.argmax(predictions, axis=-1)
+    else:
+        predicted_ids = predictions
+    
+    # Only compute accuracy for non-masked positions
+    valid_positions = labels != -100
+    
+    if valid_positions.sum() == 0:
+        return {"accuracy": 0.0}
+    
+    # Compare predictions with labels at valid positions
+    correct_predictions = (predicted_ids == labels) & valid_positions
+    
+    # Convert to float properly - this is the key fix
+    accuracy = float(correct_predictions.sum()) / float(valid_positions.sum())
+    
+    return {"accuracy": accuracy}
 
 
-class InstructBLIPTrainer(Trainer):
-    """Custom trainer for InstructBLIP with proper loss and cache handling."""
+class InstructBLIPPromptTuningTrainer(Trainer):
+    """Custom trainer for InstructBLIP with Prompt Tuning and proper loss handling."""
+    
+    def _save(self, output_dir: Optional[str] = None, state_dict=None):
+        """
+        Custom save method to pass `safe_serialization=False` to `save_pretrained`.
+        This is necessary for models with shared weights when using an older version
+        of the transformers library.
+        """
+        # We are overriding the an internal method of the Trainer to force `safe_serialization=False`
+        output_dir = output_dir if output_dir is not None else self.args.output_dir
+        os.makedirs(output_dir, exist_ok=True)
+        logger.info(f"Saving model checkpoint to {output_dir}")
+
+        self.model.save_pretrained(output_dir, state_dict=state_dict, safe_serialization=False)
+
+        if self.tokenizer is not None:
+            self.tokenizer.save_pretrained(output_dir)
+
+        # Good practice: save your training arguments together with the trained model
+        torch.save(self.args, os.path.join(output_dir, "training_args.bin"))
     
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-        """計算損失，確保只對答案部分計算損失"""
-        # Ensure model is in training mode
+        """
+        FIXED compute_loss method that handles InstructBLIP properly.
+        We pop the labels before the forward pass to compute loss manually,
+        which is necessary for prompt tuning. We then add them back for metric computation.
+        """
         model.train()
         
-        # Forward pass
-        outputs = model(**inputs)
+        # Pop labels to prevent the model from computing loss internally.
+        labels = inputs.pop("labels")
         
-        # Extract loss
-        if hasattr(outputs, 'loss') and outputs.loss is not None:
-            loss = outputs.loss
-        else:
-            # Manual loss computation
-            logits = outputs.logits
-            labels = inputs["labels"]
-            
-            # Flatten for loss computation
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            
-            # Compute cross entropy loss only on non-masked tokens
-            loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
-            loss = loss_fct(
-                shift_logits.view(-1, shift_logits.size(-1)), 
-                shift_labels.view(-1)
-            )
+        # Forward pass to get logits
+        outputs = model(**inputs)
+
+        # Put labels back for other parts of the Trainer that might need it (e.g., prediction_step for metrics)
+        inputs["labels"] = labels
+
+        logits = outputs.logits
+        
+        # CRITICAL FIX: Handle the shape mismatch issue
+        # The issue is that logits and labels might have different sequence lengths
+        # due to Q-Former outputs and virtual prompt tokens. We align them from the right.
+        
+        batch_size, logits_seq_len, vocab_size = logits.shape
+        labels_seq_len = labels.shape[1]
+        
+        if logits_seq_len != labels_seq_len:
+            # Case 1: logits are longer than labels - align from the right
+            if logits_seq_len > labels_seq_len:
+                logits = logits[:, -labels_seq_len:, :]
+            # Case 2: labels are longer than logits - also align from the right
+            else:
+                labels = labels[:, -logits_seq_len:]
+        
+        # Now logits and labels should have matching sequence lengths
+        # Shift for next token prediction
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+        
+        # Flatten for loss computation
+        loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
+        
+        # Ensure shapes match exactly
+        flat_logits = shift_logits.view(-1, shift_logits.size(-1))
+        flat_labels = shift_labels.view(-1)
+        
+        # DEBUG: Print shapes to verify alignment
+        logger.debug(f"flat_logits shape: {flat_logits.shape}")
+        logger.debug(f"flat_labels shape: {flat_labels.shape}")
+        
+        if flat_logits.size(0) != flat_labels.size(0):
+            logger.error(f"Shape mismatch: logits {flat_logits.shape} vs labels {flat_labels.shape}")
+            # Emergency fix: truncate to minimum size
+            min_size = min(flat_logits.size(0), flat_labels.size(0))
+            flat_logits = flat_logits[:min_size]
+            flat_labels = flat_labels[:min_size]
+        
+        loss = loss_fct(flat_logits, flat_labels)
+        
+        # Create output object to maintain compatibility
+        class LossOutput:
+            def __init__(self, loss, logits):
+                self.loss = loss
+                self.logits = logits
+        
+        outputs = LossOutput(loss, logits)
         
         return (loss, outputs) if return_outputs else loss
     
@@ -357,9 +370,12 @@ class InstructBLIPTrainer(Trainer):
         prediction_loss_only: bool,
         ignore_keys: Optional[List[str]] = None,
     ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
-        """執行預測步驟，正確處理DynamicCache對象"""
+        """
+        Perform a prediction step while properly handling DynamicCache objects.
+        """
         has_labels = False if len(self.label_names) == 0 else all(inputs.get(k) is not None for k in self.label_names)
         
+        # For generation/inference, we need to clean the inputs
         inputs = self._prepare_inputs(inputs)
         
         if ignore_keys is None:
@@ -368,6 +384,7 @@ class InstructBLIPTrainer(Trainer):
             else:
                 ignore_keys = []
         
+        # Override ignore_keys to exclude cache-related keys
         ignore_keys = list(ignore_keys) if ignore_keys else []
         cache_keys = ["past_key_values", "cache", "past", "mems"]
         ignore_keys.extend(cache_keys)
@@ -377,36 +394,24 @@ class InstructBLIPTrainer(Trainer):
                 with self.compute_loss_context_manager():
                     loss, outputs = self.compute_loss(model, inputs, return_outputs=True)
                 loss = loss.mean().detach()
-
-                if isinstance(outputs, dict):
-                    cleaned_outputs = {}
-                    for key, value in outputs.items():
-                        if key not in ignore_keys and not key.endswith('_cache'):
-                            if isinstance(value, torch.Tensor):
-                                cleaned_outputs[key] = value
-                    logits = cleaned_outputs.get("logits")
-                else:
-                    logits = outputs[0] if isinstance(outputs, tuple) else outputs
+                logits = outputs.logits if hasattr(outputs, 'logits') else None
             else:
                 loss = None
                 with self.compute_loss_context_manager():
                     outputs = model(**inputs)
                 if isinstance(outputs, dict):
-                    cleaned_outputs = {}
-                    for key, value in outputs.items():
-                        if key not in ignore_keys and not key.endswith('_cache'):
-                            if isinstance(value, torch.Tensor):
-                                cleaned_outputs[key] = value
-                    logits = cleaned_outputs.get("logits")
+                    logits = outputs.get("logits")
                 else:
                     logits = outputs[0] if isinstance(outputs, tuple) else outputs
 
         if prediction_loss_only:
             return (loss, None, None)
 
+        # Handle logits properly
         if logits is not None:
             logits = logits.detach()
         
+        # Handle labels
         labels = None
         if has_labels:
             labels = inputs.get("labels")
@@ -417,7 +422,7 @@ class InstructBLIPTrainer(Trainer):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Fine-tune InstructBLIP for AI image detection")
+    parser = argparse.ArgumentParser(description="Fine-tune InstructBLIP for AI image detection using Prompt Tuning")
     parser.add_argument("--config", required=True, help="Path to configuration file")
     parser.add_argument("--resume", help="Path to checkpoint to resume from")
     args = parser.parse_args()
@@ -447,12 +452,15 @@ def main():
         trust_remote_code=True
     )
 
-    # Apply LoRA fine-tuning
-    if cfg["model"]["finetune_method"] == "lora":
-        logger.info("Applying LoRA fine-tuning...")
-        model = apply_lora_correctly(model, cfg["model"]["lora_params"])
+    # Apply Prompt Tuning fine-tuning
+    if cfg["model"]["finetune_method"] == "prompt_tuning":
+        logger.info("Applying Prompt Tuning fine-tuning...")
+        # Set tokenizer for prompt tuning config
+        prompt_cfg = cfg["model"]["prompt_tuning_params"].copy()
+        prompt_cfg["tokenizer_name_or_path"] = cfg["model"]["name_pretrained"]
+        model = apply_prompt_tuning_correctly(model, prompt_cfg)
     else:
-        raise ValueError("Only LoRA fine-tuning is currently supported")
+        raise ValueError("Only Prompt Tuning fine-tuning is supported in this script")
 
     # Load datasets
     logger.info("Loading datasets...")
@@ -474,10 +482,6 @@ def main():
     for key, value in sample.items():
         if torch.is_tensor(value):
             logger.info(f"{key}: shape={value.shape}, dtype={value.dtype}")
-            if key == "labels":
-                non_masked = value[value != -100]
-                logger.info(f"  Non-masked labels: {non_masked}")
-                logger.info(f"  Label tokens: {processor.tokenizer.decode(non_masked)}")
     
     # Data collator
     collator = InstructBLIPDataCollator(processor)
@@ -487,19 +491,19 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Output directory: {out_dir}")
 
-    # Training arguments with corrected settings
+    # Training arguments
     training_args = TrainingArguments(
         output_dir=str(out_dir),
         num_train_epochs=cfg["training"]["epochs"],
         per_device_train_batch_size=cfg["training"]["batch_size"],
-        per_device_eval_batch_size=cfg["training"].get("eval_batch_size", 1),
+        per_device_eval_batch_size=cfg["training"].get("eval_batch_size", 4),
         gradient_accumulation_steps=cfg["training"]["gradient_accumulation_steps"],
-        learning_rate=cfg["training"]["learning_rate_lora"],
+        learning_rate=cfg["training"]["learning_rate_prompt_tuning"],
         warmup_steps=cfg["training"]["warmup_steps"],
         weight_decay=cfg["training"]["weight_decay"],
         bf16=cfg["training"]["use_bfloat16"],
         fp16=not cfg["training"]["use_bfloat16"],
-        gradient_checkpointing=False,
+        gradient_checkpointing=cfg["training"]["gradient_checkpointing"],
         eval_strategy=cfg["training"]["evaluation_strategy"],
         save_strategy=cfg["training"]["save_strategy"],
         save_total_limit=cfg["training"]["save_total_limit"],
@@ -508,9 +512,9 @@ def main():
         greater_is_better=True,
         report_to=[] if cfg["environment"]["disable_wandb"] else ["wandb"],
         dataloader_num_workers=0,
-        logging_steps=cfg["training"].get("logging_steps", 100),
-        eval_steps=cfg["training"].get("eval_steps", 500),
-        save_steps=cfg["training"].get("save_steps", 500),
+        logging_steps=cfg["training"].get("logging_steps", 5),
+        eval_steps=cfg["training"].get("eval_steps", 25),
+        save_steps=cfg["training"].get("save_steps", 25),
         seed=cfg["data"].get("seed", 42),
         remove_unused_columns=False,
         dataloader_pin_memory=False,
@@ -519,19 +523,17 @@ def main():
         group_by_length=False,
         length_column_name=None,
         include_inputs_for_metrics=False,
-        # 添加重要參數來改善訓練穩定性
-        max_grad_norm=1.0,  # 梯度裁剪
-        lr_scheduler_type="cosine",  # 使用餘弦學習率調度
     )
 
     # Initialize trainer
-    trainer = InstructBLIPTrainer(
+    trainer = InstructBLIPPromptTuningTrainer(
         model=model,
         args=training_args,
         train_dataset=train_ds if cfg["training"]["should_train"] else None,
         eval_dataset=val_ds,
         data_collator=collator,
-        compute_metrics=functools.partial(compute_accuracy_metrics, tokenizer=processor.tokenizer),
+        processing_class=processor,
+        compute_metrics=compute_accuracy_metrics,
         callbacks=[
             EarlyStoppingCallback(
                 early_stopping_patience=cfg["training"]["early_stopping_patience"],
