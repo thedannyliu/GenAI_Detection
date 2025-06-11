@@ -36,7 +36,7 @@ training:
   save_strategy: "steps"
   save_steps: 50                            # 調整保存頻率
   save_total_limit: 5                       # 減少保存的檢查點數量
-  early_stopping_patience: 5               # 調整早停耐心值
+  early_stopping_patience: 50               # 調整早停耐心值
   early_stopping_threshold: 0.001
   gradient_accumulation_steps: 4            # 增加梯度累積來模擬更大的batch size
   use_bfloat16: true
