@@ -21,3 +21,6 @@ classifier.
 
 The design is intentionally modular so future frequency methods or different
 VLM embeddings can be swapped in easily.
+
+For an example training setup see `configs/gxma_fusion_config.yaml` and the
+training script `src/training/train_gxma.py`.
