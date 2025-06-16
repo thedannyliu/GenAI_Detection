@@ -241,34 +241,39 @@ class InstructBLIPDataCollator:
 def compute_accuracy_metrics(eval_preds):
     """Compute accuracy for the model predictions - FIXED VERSION."""
     predictions, labels = eval_preds
-    
+
     if isinstance(predictions, tuple):
         predictions = predictions[0]
-    
+
     # Convert to numpy if they're tensors
     if hasattr(predictions, 'cpu'):
         predictions = predictions.cpu().numpy()
     if hasattr(labels, 'cpu'):
         labels = labels.cpu().numpy()
-    
-    # Get predicted token IDs
+
+    # Get predicted token IDs from logits
     if predictions.ndim == 3:  # [batch, seq_len, vocab_size]
         predicted_ids = np.argmax(predictions, axis=-1)
     else:
         predicted_ids = predictions
-    
-    # Only compute accuracy for non-masked positions
-    valid_positions = labels != -100
-    
+
+    # For Causal LMs, logits at position i are predictions for token at position i+1.
+    # We need to shift the predictions and labels to align them correctly for comparison.
+    shifted_predictions = predicted_ids[..., :-1]
+    shifted_labels = labels[..., 1:]
+
+    # Only compute accuracy for non-masked positions in the shifted labels
+    valid_positions = shifted_labels != -100
+
     if valid_positions.sum() == 0:
         return {"accuracy": 0.0}
-    
-    # Compare predictions with labels at valid positions
-    correct_predictions = (predicted_ids == labels) & valid_positions
-    
-    # Convert to float properly - this is the key fix
+
+    # Compare shifted predictions with shifted labels at valid positions
+    correct_predictions = (shifted_predictions == shifted_labels) & valid_positions
+
+    # Calculate accuracy
     accuracy = float(correct_predictions.sum()) / float(valid_positions.sum())
-    
+
     return {"accuracy": accuracy}
 
 
@@ -385,9 +390,9 @@ class InstructBLIPPromptTuningTrainer(Trainer):
                 ignore_keys = []
         
         # Override ignore_keys to exclude cache-related keys
-        ignore_keys = list(ignore_keys) if ignore_keys else []
-        cache_keys = ["past_key_values", "cache", "past", "mems"]
-        ignore_keys.extend(cache_keys)
+        # The 'past_key_values' key is handled by the model internally and should not be in inputs
+        # if 'past_key_values' in inputs:
+        #     del inputs['past_key_values']
         
         with torch.no_grad():
             if has_labels:
