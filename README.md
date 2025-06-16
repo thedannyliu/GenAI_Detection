@@ -32,6 +32,7 @@ project-root/
 │   ├── evaluation/         # Scripts for evaluating trained models
 │   ├── experiments/        # Main zero-shot experiment scripts (and older/other experiments)
 │   ├── models/             # Model definitions (CNNs, VLMs wrappers, etc.)
+│   │   └── gxma/           # GXMA-Fusion Detector implementation
 │   ├── prompts/            # Prompt engineering strategies and definitions
 │   ├── training/           # Scripts for model training (e.g. CNNs, VLM fine-tuning, linear probes)
 │   └── utils/              # Utility functions (config loading, logging, etc.)
