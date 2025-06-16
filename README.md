@@ -32,6 +32,7 @@ project-root/
 │   ├── evaluation/         # Scripts for evaluating trained models
 │   ├── experiments/        # Main zero-shot experiment scripts (and older/other experiments)
 │   ├── models/             # Model definitions (CNNs, VLMs wrappers, etc.)
+│   │   └── gxma/           # GXMA-Fusion Detector implementation
 │   ├── prompts/            # Prompt engineering strategies and definitions
 │   ├── training/           # Scripts for model training (e.g. CNNs, VLM fine-tuning, linear probes)
 │   └── utils/              # Utility functions (config loading, logging, etc.)
@@ -109,6 +110,16 @@ This approach trains a linear classifier on top of frozen image embeddings extra
     python src/training/clip_linear_probe_train.py --config configs/clip_linear_probe_config.yaml
     ```
     This will save the best linear classifier, training history, and test set evaluation results.
+
+**For GXMA Fusion Detector Training:**
+
+The GXMA Fusion Detector integrates frequency features with CLIP semantics.
+1.  **Configure**: Edit `configs/gxma_fusion_config.yaml` with dataset paths and parameters.
+2.  **Run training script**:
+    ```bash
+    python src/training/train_gxma.py --config configs/gxma_fusion_config.yaml
+    ```
+    This script trains the model and evaluates on the test split, saving results under `results/gxma_runs/<experiment_name>/`.
 
 ### Evaluation
 
