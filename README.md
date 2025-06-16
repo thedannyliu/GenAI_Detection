@@ -111,6 +111,16 @@ This approach trains a linear classifier on top of frozen image embeddings extra
     ```
     This will save the best linear classifier, training history, and test set evaluation results.
 
+**For GXMA Fusion Detector Training:**
+
+The GXMA Fusion Detector integrates frequency features with CLIP semantics.
+1.  **Configure**: Edit `configs/gxma_fusion_config.yaml` with dataset paths and parameters.
+2.  **Run training script**:
+    ```bash
+    python src/training/train_gxma.py --config configs/gxma_fusion_config.yaml
+    ```
+    This script trains the model and evaluates on the test split, saving results under `results/gxma_runs/<experiment_name>/`.
+
 ### Evaluation
 
 **Zero-shot VLM Evaluation (Custom Script):**
