@@ -23,8 +23,8 @@ model:
 training:
   should_train: true
   epochs: 2000                                 # 減少epoch數以避免過擬合
-  batch_size: 64                             # 減小batch size以避免記憶體問題
-  eval_batch_size: 64                        # 減小評估batch size
+  batch_size: 128                            # 減小batch size以避免記憶體問題
+  eval_batch_size: 128                        # 減小評估batch size
   learning_rate_full: 5.0e-5
   learning_rate_prompt_tuning: 1.0e-2      # 調整學習率
   warmup_steps: 150                          # 減少warmup steps
@@ -38,7 +38,7 @@ training:
   save_total_limit: 5                       # 減少保存的檢查點數量
   early_stopping_patience: 50               # 調整早停耐心值
   early_stopping_threshold: 0.001
-  gradient_accumulation_steps: 4            # 增加梯度累積來模擬更大的batch size
+  gradient_accumulation_steps: 2            # 增加梯度累積來模擬更大的batch size
   use_bfloat16: true
   gradient_checkpointing: true              # 啟用梯度檢查點以節省記憶體
   logging_steps: 10                         # 調整日誌頻率
