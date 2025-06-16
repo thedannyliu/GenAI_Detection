@@ -29,28 +29,34 @@ class CrossAttentionFusion(nn.Module):
 class GXMAFusionDetector(nn.Module):
     """PoC detector combining frequency fingerprints and CLIP semantics."""
 
-    def __init__(self, hidden_dim: int = 256, num_heads: int = 4) -> None:
+    def __init__(self, hidden_dim: int = 256, num_heads: int = 4, num_classes: int = 2) -> None:
         super().__init__()
         self.freq_extractor = FrequencyFeatureExtractor()
         self.sem_extractor = CLIPCLSExtractor()
         # frequency vector length: 128 + 64 + 64 = 256
         freq_dim = 256
-        # CLIP ViT-L/14 has hidden size 768 for the vision encoder
-        sem_dim = 768
+        # Determine semantic feature dimension dynamically from the extractor
+        sem_dim = self.sem_extractor.hidden_dim
         self.fusion = CrossAttentionFusion(freq_dim, sem_dim, hidden_dim, num_heads)
         self.classifier = nn.Sequential(
             nn.Linear(hidden_dim, 128),
             nn.ReLU(),
-            nn.Linear(128, 2)
+            nn.Linear(128, num_classes)
         )
 
-    def forward(self, images: List[Image.Image]) -> torch.Tensor:
+    def forward(self, images: torch.Tensor) -> torch.Tensor:
+        # 'images' is a batch of tensors on the target device (e.g., cuda:1)
         sem_feat = self.sem_extractor(images)
-        to_tensor = T.ToTensor()
-        freq_feats = [self.freq_extractor(to_tensor(img)) for img in images]
+
+        # freq_extractor expects a single CPU tensor.
+        freq_feats = [self.freq_extractor(img.cpu()) for img in images]
         freq_feat = torch.stack(freq_feats, dim=0)
-        if torch.cuda.is_available():
-            freq_feat = freq_feat.to(sem_feat.device)
+
+        # Move the computed frequency features to the target device.
+        # The target device is determined from the model's parameters.
+        target_device = next(self.parameters()).device
+        freq_feat = freq_feat.to(target_device)
+
         fused = self.fusion(freq_feat, sem_feat)
         logits = self.classifier(fused)
         return logits

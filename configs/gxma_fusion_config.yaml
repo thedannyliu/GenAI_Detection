@@ -4,19 +4,20 @@ general:
   output_dir: "results/gxma_runs"  # Base directory for all outputs
   experiment_name: "gxma_fusion_poc"  # Subdirectory name for this run
   seed: 42
-  gpu_id: 0  # GPU ID to use
+  gpu_id: 1  # GPU ID to use
 
 model:
+  # Parameters for the GXMAFusionDetector model
   hidden_dim: 256
   num_heads: 4
   num_classes: 2
 
 data:
-  base_data_dir: "/path/to/genimage_dataset/"  # UPDATE with actual dataset path
+  base_data_dir: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0419_sdv4/"
   train_samples_per_class: 5000
   val_samples_per_class: 500
   test_samples_per_class: 500
-  batch_size: 8
+  batch_size: 128
   num_workers: 4
   class_to_idx:
     nature: 0
@@ -26,7 +27,14 @@ training:
   optimizer: "adamw"
   learning_rate: 1e-4
   weight_decay: 0.0
-  num_epochs: 10
+  num_epochs: 2000
+  scheduler:
+    name: "cosine_with_warmup"
+    warmup_steps: 150
+  early_stopping:
+    monitor: "val_acc"
+    patience: 50
+    threshold: 0.001
 
 evaluation:
-  batch_size: 8
+  batch_size: 128
