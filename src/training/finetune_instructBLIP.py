@@ -40,19 +40,32 @@ class AINatureDataset(Dataset):
         self.processor = processor
         self.samples = []
         
-        # Load samples from both folders
-        for lbl_name, lbl_id in [("ai", 1), ("nature", 0)]:
-            folder = Path(root) / lbl_name
-            if not folder.exists():
-                raise FileNotFoundError(f"{folder} not found")
-            
-            folder_samples = []
-            for p in folder.rglob("*"):
-                if p.suffix.lower() in [".jpg", ".jpeg", ".png", ".webp"]:
-                    folder_samples.append((str(p), lbl_id))
-            
-            logger.info(f"Found {len(folder_samples)} samples in {folder}")
-            self.samples.extend(folder_samples)
+        # 支援多種資料夾命名方式 (ai/nature、1_fake/0_real、fake/real)
+        label_dirs = {
+            1: ["ai", "1_fake", "fake"],   # AI 生成影像
+            0: ["nature", "0_real", "real"],  # 真實影像
+        }
+
+        for lbl_id, dir_names in label_dirs.items():
+            found_any = False
+            for dir_name in dir_names:
+                folder = Path(root) / dir_name
+                if not folder.exists():
+                    continue  # 該命名不存在，繼續尋找其他別名
+
+                found_any = True
+                folder_samples = []
+                for p in folder.rglob("*"):
+                    if p.suffix.lower() in [".jpg", ".jpeg", ".png", ".webp"]:
+                        folder_samples.append((str(p), lbl_id))
+
+                logger.info(f"Found {len(folder_samples)} samples in {folder}")
+                self.samples.extend(folder_samples)
+
+            if not found_any:
+                logger.warning(
+                    f"No folder found for label {lbl_id} under aliases {dir_names} in {root}"
+                )
         
         # Shuffle and limit samples if specified
         random.shuffle(self.samples)

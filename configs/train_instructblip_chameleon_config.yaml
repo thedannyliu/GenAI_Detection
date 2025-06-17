@@ -1,0 +1,52 @@
+# configs/train_instructblip_chameleon_config.yaml
+# 資料設定 (Data Settings)
+data:
+  train_path: "/raid/dannyliu/dataset/GAI_Dataset/Chameleon/test"  # Chameleon 資料集路徑：0_real / 1_fake
+  val_test_path: "/raid/dannyliu/dataset/GAI_Dataset/Chameleon/test"
+  num_train_samples: 10000
+  num_val_samples: 1000
+  num_test_samples: 1000
+  seed: 42
+
+# 模型設定 (Model Settings)
+model:
+  name_pretrained: "Salesforce/instructblip-vicuna-7b"
+  finetune_method: "lora"
+  lora_params:
+    r: 8
+    alpha: 16
+    dropout: 0.1
+    target_modules: ["q_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
+# 訓練設定 (Training Settings)
+training:
+  should_train: true
+  epochs: 2000
+  batch_size: 32
+  eval_batch_size: 32
+  learning_rate_full: 5.0e-5
+  learning_rate_lora: 2.0e-4  # LoRA 學習率
+  warmup_steps: 50
+  weight_decay: 0.01
+  max_target_token_length: 16
+  prompt_config_idx: 0
+  evaluation_strategy: "steps"
+  eval_steps: 50
+  save_strategy: "steps"
+  save_steps: 50
+  save_total_limit: 3
+  early_stopping_patience: 50
+  early_stopping_threshold: 0.001
+  gradient_accumulation_steps: 8
+  use_bfloat16: true
+  gradient_checkpointing: false
+  logging_steps: 20
+
+# 輸出設定 (Output Settings)
+output:
+  base_results_dir_root: "results/instructblip_finetune_chameleon"
+
+# 環境設定 (Environment Settings)
+environment:
+  gpu_id: 2
+  disable_wandb: true 
