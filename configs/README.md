@@ -74,5 +74,7 @@ vlm:
 - `vlm_fine_tune.yaml`: Example configuration for VLM fine-tuning.
 - `vlm_zero_shot.yaml`: An older or alternative configuration for zero-shot VLM evaluation, possibly for a single model run.
 - `gxma_fusion_config.yaml`: Configuration for training the GXMA Fusion Detector proof of concept.
+- `gxma_fusion_parallel.yaml`: Uses the parallel attention fusion strategy (Strategy B).
+- `gxma_fusion_gated.yaml`: Uses the hierarchical gating fusion strategy (Strategy C).
 
 These files should be documented similarly as their functionalities are developed or integrated into experimental workflows. 

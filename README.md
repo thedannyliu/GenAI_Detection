@@ -114,7 +114,7 @@ This approach trains a linear classifier on top of frozen image embeddings extra
 **For GXMA Fusion Detector Training:**
 
 The GXMA Fusion Detector integrates frequency features with CLIP semantics.
-1.  **Configure**: Edit `configs/gxma_fusion_config.yaml` with dataset paths and parameters.
+1.  **Configure**: Edit `configs/gxma_fusion_config.yaml` with dataset paths and parameters. Variants `gxma_fusion_parallel.yaml` and `gxma_fusion_gated.yaml` set alternative fusion strategies.
 2.  **Run training script**:
     ```bash
     python src/training/train_gxma.py --config configs/gxma_fusion_config.yaml

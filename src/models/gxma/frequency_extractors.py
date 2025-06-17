@@ -71,3 +71,16 @@ class FrequencyFeatureExtractor:
         f_dct = dct_statistics(image)
         f_wavelet = wavelet_statistics(image)
         return torch.cat([f_radial, f_dct, f_wavelet], dim=-0)
+
+
+class FrequencyFeatureExtractorSplit:
+    """Extract frequency features and return them separately."""
+
+    def __init__(self) -> None:
+        pass
+
+    def __call__(self, image: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        f_radial = radial_average_spectrum(image)
+        f_dct = dct_statistics(image)
+        f_wavelet = wavelet_statistics(image)
+        return f_radial, f_dct, f_wavelet
