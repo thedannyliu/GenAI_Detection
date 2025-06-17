@@ -158,6 +158,12 @@ def main(config_path: str, mode: str) -> None:
     ])
 
     dataset_root = data_cfg["base_data_dir"]
+
+    # 允許在 YAML 中自訂資料集 split 子資料夾名稱，預設為原本的 train/val
+    train_split_name = data_cfg.get("train_split_name", "train")
+    val_split_name = data_cfg.get("val_split_name", "val")
+    test_split_name = data_cfg.get("test_split_name", val_split_name)  # 預設與 val 相同
+
     class_map = data_cfg.get("class_to_idx", {"nature": 0, "ai": 1})
     num_train = data_cfg.get("train_samples_per_class")
     num_val = data_cfg.get("val_samples_per_class")
@@ -165,7 +171,7 @@ def main(config_path: str, mode: str) -> None:
 
     train_dataset = GenImageDataset(
         dataset_root,
-        split="train",
+        split=train_split_name,
         transform=transform,
         class_to_idx=class_map,
         num_samples_per_class=num_train,
@@ -173,7 +179,7 @@ def main(config_path: str, mode: str) -> None:
     )
     val_dataset = GenImageDataset(
         dataset_root,
-        split="val",
+        split=val_split_name,
         transform=transform,
         class_to_idx=class_map,
         num_samples_per_class=num_val,
@@ -181,7 +187,7 @@ def main(config_path: str, mode: str) -> None:
     )
     test_dataset = GenImageDataset(
         dataset_root,
-        split="val",
+        split=test_split_name,
         transform=transform,
         class_to_idx=class_map,
         num_samples_per_class=num_test,
