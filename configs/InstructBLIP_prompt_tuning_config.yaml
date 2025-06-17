@@ -2,8 +2,8 @@
 
 # 資料設定 (Data Settings)
 data:
-  train_path: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0419_sdv4/train"
-  val_test_path: "/raid/dannyliu/dataset/GAI_Dataset/genimage/imagenet_ai_0419_sdv4/val"
+  train_path: "/raid/dannyliu/dataset/GAI_Dataset/Chameleon/test"
+  val_test_path: "/raid/dannyliu/dataset/GAI_Dataset/Chameleon/test"
   num_train_samples: 10000                    # 訓練樣本數
   num_val_samples: 1000                      # 驗證樣本數
   num_test_samples: 1000
@@ -45,9 +45,9 @@ training:
 
 # 輸出設定 (Output Settings)
 output:
-  base_results_dir_root: "results/instructblip_prompt_tuning"
+  base_results_dir_root: "results/instructblip_prompt_tuning_chameleon"
 
 # 環境設定 (Environment Settings)
 environment:
-  gpu_id: 1
+  gpu_id: 2
   disable_wandb: true
