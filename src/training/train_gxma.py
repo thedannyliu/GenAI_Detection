@@ -230,6 +230,7 @@ def main(config_path: str, mode: str) -> None:
             hidden_dim=model_cfg.get("hidden_dim", 256),
             num_heads=model_cfg.get("num_heads", 4),
             num_classes=model_cfg.get("num_classes", 2),
+            fusion_strategy=model_cfg.get("fusion_strategy", "concat"),
         ).to(device)
     elif mode == "frequency":
         model = FrequencyOnlyDetector(

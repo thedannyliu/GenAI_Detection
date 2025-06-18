@@ -11,8 +11,8 @@ classifier.
   feature extraction methods:
   1. Radial Average Spectrum
   2. Block DCT coefficient statistics
-  3. Wavelet coefficient histogram
-  The extracted vectors are concatenated into a 256‑dimensional descriptor.
+ 3. Wavelet coefficient histogram
+  By default these vectors are concatenated into a 256‑dimensional descriptor (Strategy A).
 - **clip_semantics.py** – Provides `CLIPCLSExtractor` which extracts the global
   `[CLS]` token from OpenAI's CLIP ViT-L/14 model.
 - **gxma_fusion_detector.py** – Defines the `GXMAFusionDetector` model that
@@ -20,7 +20,14 @@ classifier.
   predicts real vs. AI-generated images.
 
 The design is intentionally modular so future frequency methods or different
-VLM embeddings can be swapped in easily.
+VLM embeddings can be swapped in easily. Three fusion strategies are supported:
+
+1. **Strategy A – Simple Concatenation**: frequency vectors are concatenated and
+   a single cross-attention module fuses them with CLIP semantics.
+2. **Strategy B – Parallel Attention Streams**: each frequency expert has its
+   own attention stream and the outputs are summed.
+3. **Strategy C – Hierarchical Gating**: parallel attention streams whose
+   outputs are combined using a gate conditioned on the CLIP semantic vector.
 
 ## Training
 
@@ -35,7 +42,7 @@ python src/training/train_gxma.py --config configs/gxma_fusion_config.yaml
 The training process is controlled by a YAML configuration file (`configs/gxma_fusion_config.yaml`). Key parameters include:
 
 - **general**: `output_dir`, `experiment_name`, `seed`, `gpu_id`.
-- **model**: `hidden_dim`, `num_heads`, `num_classes` for the detector architecture.
+ - **model**: `hidden_dim`, `num_heads`, `num_classes`, and `fusion_strategy` (`concat`, `parallel`, or `gated`).
 - **data**: `base_data_dir`, sample counts, `batch_size`, `num_workers`.
 - **training**: `num_epochs`, `learning_rate`, `optimizer`, and settings for:
     - **scheduler**: Learning rate scheduler (e.g., `cosine_with_warmup`) with `warmup_steps`.
@@ -57,7 +64,7 @@ All training hyper-parameters, scheduler, and early-stopping behaviour remain id
 ### Running the ablations
 
 ```bash
-# Full fusion (default)
+# Full fusion (default strategy A)
 python src/training/train_gxma.py --config configs/gxma_fusion_config.yaml --mode fusion
 
 # Frequency-only baseline
@@ -65,6 +72,12 @@ python src/training/train_gxma.py --config configs/gxma_fusion_config.yaml --mod
 
 # Semantic-only baseline
 python src/training/train_gxma.py --config configs/gxma_fusion_config.yaml --mode semantic
+
+# Using strategy B (parallel attention)
+python src/training/train_gxma.py --config configs/gxma_fusion_parallel.yaml --mode fusion
+
+# Using strategy C (gated attention)
+python src/training/train_gxma.py --config configs/gxma_fusion_gated.yaml --mode fusion
 ```
 
 > Tip: Use different `experiment_name` values in the YAML (e.g. `gxma_fusion_v1`, `gxma_freq_only`, `gxma_sem_only`) to keep results in separate folders.
