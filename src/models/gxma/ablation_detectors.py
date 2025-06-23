@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from typing import List
+from typing import List, Optional
 import torchvision.transforms as T
 
 from .frequency_extractors import FrequencyFeatureExtractor
@@ -10,11 +10,12 @@ from .clip_semantics import CLIPCLSExtractor
 class FrequencyOnlyDetector(nn.Module):
     """Classifier using ONLY frequency fingerprints."""
 
-    def __init__(self, hidden_dim: int = 256, num_classes: int = 2):
+    def __init__(self, hidden_dim: int = 256, num_classes: int = 2, freq_methods: Optional[List[str]] = None):
         super().__init__()
-        self.freq_extractor = FrequencyFeatureExtractor()  # 256-d output
+        self.freq_extractor = FrequencyFeatureExtractor(methods=freq_methods)
+        freq_dim = self.freq_extractor.output_dim
         self.classifier = nn.Sequential(
-            nn.Linear(256, hidden_dim),
+            nn.Linear(freq_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, num_classes),
         )

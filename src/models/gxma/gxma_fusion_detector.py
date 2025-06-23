@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from typing import List
+from typing import List, Optional
 from PIL import Image
 import torchvision.transforms as T
 
@@ -29,12 +29,11 @@ class CrossAttentionFusion(nn.Module):
 class GXMAFusionDetector(nn.Module):
     """PoC detector combining frequency fingerprints and CLIP semantics."""
 
-    def __init__(self, hidden_dim: int = 256, num_heads: int = 4, num_classes: int = 2) -> None:
+    def __init__(self, hidden_dim: int = 256, num_heads: int = 4, num_classes: int = 2, freq_methods: Optional[List[str]] = None, model_cfg: dict = None) -> None:
         super().__init__()
-        self.freq_extractor = FrequencyFeatureExtractor()
-        self.sem_extractor = CLIPCLSExtractor()
-        # frequency vector length: 128 + 64 + 64 = 256
-        freq_dim = 256
+        self.freq_extractor = FrequencyFeatureExtractor(methods=freq_methods)
+        self.sem_extractor = CLIPCLSExtractor(lora_cfg=model_cfg.get("lora", None))
+        freq_dim = self.freq_extractor.output_dim
         # Determine semantic feature dimension dynamically from the extractor
         sem_dim = self.sem_extractor.hidden_dim
         self.fusion = CrossAttentionFusion(freq_dim, sem_dim, hidden_dim, num_heads)

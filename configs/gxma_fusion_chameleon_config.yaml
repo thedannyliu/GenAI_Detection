@@ -2,7 +2,7 @@
 
 general:
   output_dir: "results/gxma_runs"
-  experiment_name: "gxma_fusion_chameleon"
+  experiment_name: "gxma_fusion_chameleon_sem_only"
   seed: 42
   gpu_id: 1
 
@@ -29,7 +29,7 @@ data:
   val_samples_per_class: 1000
   test_samples_per_class: 1000
 
-  batch_size: 128
+  batch_size: 256
   num_workers: 4
 
 training:
@@ -41,9 +41,9 @@ training:
     name: "cosine_with_warmup"
     warmup_steps: 150
   early_stopping:
-    monitor: "val_acc"
+    monitor: "val_auc"
     patience: 50
     threshold: 0.001
 
 evaluation:
-  batch_size: 128 
+  batch_size: 256 

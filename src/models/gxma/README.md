@@ -68,3 +68,58 @@ python src/training/train_gxma.py --config configs/gxma_fusion_config.yaml --mod
 ```
 
 > Tip: Use different `experiment_name` values in the YAML (e.g. `gxma_fusion_v1`, `gxma_freq_only`, `gxma_sem_only`) to keep results in separate folders.
+
+## Advanced Usage
+
+### 1. Selective Frequency Extraction
+
+`FrequencyFeatureExtractor` now supports **on-demand selection** of the three
+available spectral descriptors.  In your YAML you may add:
+
+```yaml
+model:
+  # Use only Radial FFT and DCT statistics
+  freq_methods: ["radial", "dct"]
+```
+
+If the key is **omitted**, the extractor defaults to **`["radial", "dct", "wavelet"]`** (all three).
+The same field is respected for both `GXMAFusionDetector` and
+`FrequencyOnlyDetector`.
+
+### 2. External Test Sets (`extra_tests`)
+
+You can ask the training script to evaluate additional *out-of-distribution*
+datasets right after training.  Example configuration snippet:
+
+```yaml
+evaluation:
+  batch_size: 128
+  extra_tests:
+    - name: "chameleon_poc"
+      base_data_dir: "/path/to/chameleon_poc"
+      split_name: ""            # root contains ai/ & nature/
+      class_to_idx: {nature: 0, ai: 1}
+```
+
+Metrics for each listed dataset are appended under
+`results/.../training_results.json -> extra_tests` together with a confusion
+matrix.
+
+### 3. Reproducibility
+
+The active YAML file is automatically copied to the run folder as
+`config_used.yaml`, ensuring the exact hyper-parameters can be recovered.
+
+### 4. GPU Memory Notes
+
+* The CLIP vision encoder is loaded to the same device as the main detector
+  (`model.to(device)`).  Because its parameters are frozen and wrapped in
+  `torch.no_grad()`, the forward pass holds only weights (+ minor activations),
+  so VRAM usage is modest (~2–3 GB for ViT-L/14).
+* Spectral feature extraction (FFT/DCT/Wavelet) currently runs on **CPU** via
+  NumPy/SciPy/PyWavelets.  Porting these kernels to CUDA would require
+  replacing them with `torch.fft` / custom GPU ops and is left as future
+  work.
+* To fine-tune CLIP (thus increasing GPU utilisation) simply remove the
+  `requires_grad = False` loop and the `torch.no_grad()` guard in
+  `CLIPCLSExtractor`.

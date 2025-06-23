@@ -2,7 +2,7 @@
 
 general:
   output_dir: "results/gxma_runs"  # Base directory for all outputs
-  experiment_name: "gxma_fusion_poc_genimage"  # Subdirectory name for this run
+  experiment_name: "gxma_sem_only_poc_genimage"  # Subdirectory name for this run
   seed: 42
   gpu_id: 1  # GPU ID to use
 
@@ -39,8 +39,6 @@ training:
     warmup_steps: 15
   early_stopping:
     monitor: "val_auc"  # 與主要指標一致
-    patience: 40         # 連續 40 個 epoch 無提升才停
-    threshold: 0.001     # 指標至少提升 0.001 才算進步
 
 evaluation:
   batch_size: 512

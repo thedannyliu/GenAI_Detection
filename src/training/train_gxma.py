@@ -12,12 +12,14 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, roc_auc_score, f1_score, confusion_matrix
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LambdaLR
 import torchvision.transforms as T
 import time
 from tqdm.auto import tqdm
+from torch.utils.tensorboard import SummaryWriter  # type: ignore
+import shutil
 
 from src.data_processing.custom_dataset import GenImageDataset
 from src.models.gxma.gxma_fusion_detector import GXMAFusionDetector
@@ -102,11 +104,12 @@ def evaluate(
     criterion: nn.Module,
     device: torch.device,
     epoch: int,
-) -> Tuple[float, float]:
+) -> Tuple[float, float, float, float, torch.Tensor, torch.Tensor]:
     model.eval()
     total_loss = 0.0
     all_preds: List[int] = []
     all_labels: List[int] = []
+    all_probs: List[float] = []  # For AUC
 
     with torch.no_grad():
         for images, labels in tqdm(loader, desc=f"Eval {epoch}", leave=False):
@@ -122,10 +125,18 @@ def evaluate(
             preds = outputs.argmax(dim=1)
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
+            probs = torch.softmax(outputs, dim=1)[:, 1]  # probability of class 1
+            all_probs.extend(probs.cpu().numpy())
 
     avg_loss = total_loss / len(loader) if len(loader) > 0 else 0.0
     acc = accuracy_score(all_labels, all_preds) if all_labels else 0.0
-    return avg_loss, acc
+    # Calculate AUC & F1 safely
+    try:
+        auc = roc_auc_score(all_labels, all_probs) if len(set(all_labels)) > 1 else 0.0
+    except Exception:
+        auc = 0.0
+    f1 = f1_score(all_labels, all_preds, average="binary") if all_labels else 0.0
+    return avg_loss, acc, auc, f1, torch.tensor(all_preds), torch.tensor(all_labels)
 
 
 def main(config_path: str, mode: str) -> None:
@@ -138,6 +149,8 @@ def main(config_path: str, mode: str) -> None:
     train_cfg = cfg.get("training", {})
     eval_cfg = cfg.get("evaluation", {})
 
+    freq_methods = model_cfg.get("freq_methods", ["radial", "dct", "wavelet"])
+
     seed = general.get("seed", 42)
     set_seed(seed)
 
@@ -149,6 +162,12 @@ def main(config_path: str, mode: str) -> None:
         "experiment_name", "gxma_fusion_poc"
     )
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save a copy of the config YAML for reproducibility
+    try:
+        shutil.copy(config_path, output_dir / "config_used.yaml")
+    except Exception as e_copy:
+        print(f"Warning: Failed to copy config file to output dir: {e_copy}")
 
     # Define a basic transform to convert images to tensors
     transform = T.Compose([
@@ -230,11 +249,14 @@ def main(config_path: str, mode: str) -> None:
             hidden_dim=model_cfg.get("hidden_dim", 256),
             num_heads=model_cfg.get("num_heads", 4),
             num_classes=model_cfg.get("num_classes", 2),
+            freq_methods=freq_methods,
+            model_cfg=model_cfg,
         ).to(device)
     elif mode == "frequency":
         model = FrequencyOnlyDetector(
             hidden_dim=model_cfg.get("hidden_dim", 256),
             num_classes=model_cfg.get("num_classes", 2),
+            freq_methods=freq_methods,
         ).to(device)
     elif mode == "semantic":
         model = SemanticOnlyDetector(
@@ -271,6 +293,10 @@ def main(config_path: str, mode: str) -> None:
     es_monitor = early_stopping_cfg.get("monitor", "val_acc")
 
     best_metric = 0.0 if es_monitor == "val_acc" else float('inf')
+    if es_monitor in ["val_acc", "val_auc", "val_f1"]:
+        best_metric = 0.0
+    else:
+        best_metric = float('inf')
     epochs_no_improve = 0
     
     history = {
@@ -278,11 +304,14 @@ def main(config_path: str, mode: str) -> None:
         "val_loss": [],
         "train_acc": [],
         "val_acc": [],
+        "val_auc": [],
+        "val_f1": [],
         "lr": [],
     }
 
     current_step = 0
     training_start_time = time.time()
+    writer = SummaryWriter(log_dir=str(output_dir / "tensorboard"))
     for epoch in range(1, num_epochs + 1):
         print(f"\n========== Epoch {epoch}/{num_epochs} ==========")
         epoch_start_time = time.time()
@@ -299,18 +328,20 @@ def main(config_path: str, mode: str) -> None:
             epoch,
         )
         print("[Stage] Validation loop")
-        val_loss, val_acc = evaluate(model, val_loader, criterion, device, epoch)
+        val_loss, val_acc, val_auc, val_f1, val_preds_tensor, val_labels_tensor = evaluate(model, val_loader, criterion, device, epoch)
 
         history["train_loss"].append(train_loss)
         history["val_loss"].append(val_loss)
         history["train_acc"].append(train_acc)
         history["val_acc"].append(val_acc)
+        history["val_auc"].append(val_auc)
+        history["val_f1"].append(val_f1)
         history["lr"].append(optimizer.param_groups[0]["lr"])
 
         print(
             f"Epoch {epoch}/{num_epochs} - "
             f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, "
-            f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, "
+            f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, Val AUC: {val_auc:.4f}, Val F1: {val_f1:.4f}, "
             f"LR: {optimizer.param_groups[0]['lr']:.6f}"
         )
 
@@ -331,8 +362,15 @@ def main(config_path: str, mode: str) -> None:
         )
 
         metric_to_check = val_acc if es_monitor == "val_acc" else val_loss
+        if es_monitor == "val_auc":
+            metric_to_check = val_auc
+        elif es_monitor == "val_f1":
+            metric_to_check = val_f1
         
-        improvement = metric_to_check - best_metric if es_monitor == "val_acc" else best_metric - metric_to_check
+        if es_monitor in ["val_acc", "val_auc", "val_f1"]:
+            improvement = metric_to_check - best_metric
+        else:
+            improvement = best_metric - metric_to_check
 
         if improvement > es_threshold:
             best_metric = metric_to_check
@@ -351,30 +389,86 @@ def main(config_path: str, mode: str) -> None:
             print("Completed all training steps.")
             break
 
+        # TensorBoard logging
+        writer.add_scalar("Loss/train", train_loss, epoch)
+        writer.add_scalar("Loss/val", val_loss, epoch)
+        writer.add_scalar("Acc/train", train_acc, epoch)
+        writer.add_scalar("Acc/val", val_acc, epoch)
+        writer.add_scalar("AUC/val", val_auc, epoch)
+        writer.add_scalar("F1/val", val_f1, epoch)
+        writer.add_scalar("LR", optimizer.param_groups[0]["lr"], epoch)
+
     # Final evaluation on the test set using the best model
     print("[Stage] Final Test evaluation")
     print("Loading best model for final evaluation...")
     checkpoint_path = output_dir / "best_model.pth"
     if checkpoint_path.exists():
         model.load_state_dict(torch.load(checkpoint_path))
-        test_loss, test_acc = evaluate(model, test_loader, criterion, device, "Test")
+        test_loss, test_acc, test_auc, test_f1, test_preds_tensor, test_labels_tensor = evaluate(model, test_loader, criterion, device, 0)
         print(f"Test Accuracy on best model: {test_acc:.4f}")
+        print(f"Test AUC on best model: {test_auc:.4f}, Test F1: {test_f1:.4f}")
     else:
         print("No best model found. Evaluating model from last epoch.")
-        test_loss, test_acc = evaluate(model, test_loader, criterion, device, "Test")
+        test_loss, test_acc, test_auc, test_f1, test_preds_tensor, test_labels_tensor = evaluate(model, test_loader, criterion, device, 0)
         print(f"Test Accuracy on last model: {test_acc:.4f}")
-
+        print(f"Test AUC on last model: {test_auc:.4f}, Test F1: {test_f1:.4f}")
 
     results = {
         "history": history,
         "best_val_metric": best_metric,
         "test_loss": test_loss,
         "test_acc": test_acc,
+        "test_auc": test_auc,
+        "test_f1": test_f1,
+        "confusion_matrix_test": confusion_matrix(test_labels_tensor.cpu().numpy(), test_preds_tensor.cpu().numpy()).tolist(),
         "config": cfg,
     }
+    # ---- Extra test datasets evaluation ----
+    extra_test_results = {}
+    extra_tests_cfg = eval_cfg.get("extra_tests", [])
+    for extra_cfg in extra_tests_cfg:
+        ds_name = extra_cfg.get("name", "extra")
+        ds_root = extra_cfg["base_data_dir"]
+        split_name = extra_cfg.get("split_name", "")
+        class_map_extra = extra_cfg.get("class_to_idx", class_map)
+        num_samples_extra = extra_cfg.get("num_samples_per_class")
+
+        extra_dataset = GenImageDataset(
+            ds_root,
+            split=split_name,
+            transform=transform,
+            class_to_idx=class_map_extra,
+            num_samples_per_class=num_samples_extra,
+            seed=seed + 3,
+        )
+        extra_loader = DataLoader(
+            extra_dataset,
+            batch_size=eval_cfg.get("batch_size", batch_size),
+            shuffle=False,
+            num_workers=num_workers,
+            collate_fn=vlm_collate_fn,
+        )
+        print(f"[Stage] Extra Test evaluation on {ds_name} | images: {len(extra_dataset)}")
+        extra_loss, extra_acc, extra_auc, extra_f1, extra_preds_tensor, extra_labels_tensor = evaluate(
+            model, extra_loader, criterion, device, 0
+        )
+        print(
+            f"Extra Test ({ds_name}) - Loss: {extra_loss:.4f}, Acc: {extra_acc:.4f}, AUC: {extra_auc:.4f}, F1: {extra_f1:.4f}"
+        )
+        extra_test_results[ds_name] = {
+            "loss": extra_loss,
+            "acc": extra_acc,
+            "auc": extra_auc,
+            "f1": extra_f1,
+            "confusion_matrix": confusion_matrix(extra_labels_tensor.cpu().numpy(), extra_preds_tensor.cpu().numpy()).tolist(),
+        }
+
+    results["extra_tests"] = extra_test_results
+
     with open(output_dir / "training_results.json", "w") as f:
         json.dump(results, f, indent=4)
     print(f"Results saved to {output_dir}")
+    writer.close()
 
 
 if __name__ == "__main__":
