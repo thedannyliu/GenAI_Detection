@@ -5,6 +5,68 @@ combines frequency based fingerprints with vision-language model semantics
 via a simple cross-attention mechanism and finishes with a lightweight MLP
 classifier.
 
+> 2025-06-16  Update — **Strategy B: Parallel Attention Streams** has been implemented.  See
+> `ParallelCrossAttentionFusion` in `gxma_fusion_detector.py` and the new YAML
+> configs described below.
+
+The design is intentionally modular so future frequency methods or different
+VLM embeddings can be swapped in easily.
+
+## New: Parallel Attention Streams (Strategy B)
+
+In addition to the original *1-to-1* cross-attention (single K/V stream), the
+detector now supports **Parallel Attention Streams** where *one attention head
+is built for each frequency descriptor* (Radial FFT, DCT, Wavelet).  The CLIP
+semantic vector is used as a *shared Query* while each frequency vector is
+projected to its own Key/Value space:
+
+```
+             ┌──────────────────────────┐
+   F_radial ─►  Attn(q, k_r, v_r) ─┐    │
+             ├─────────────────────┤    │  summed ➜ fused repr.
+   F_dct    ─►  Attn(q, k_d, v_d) ─┼──► Σ │
+             ├─────────────────────┤    │
+   F_wavelet ─►  Attn(q, k_w, v_w) ─┘    │
+             └──────────────────────────┘
+```
+
+Output vectors from each stream are **summed** (default) or concatenated
+(aggregated="concat") before the MLP classifier.  This yields a stronger yet
+light-weight fusion without introducing heavy transformer blocks.
+
+To enable the parallel strategy simply add the following to your YAML config
+under the `model:` section:
+
+```yaml
+model:
+  fusion_strategy: "parallel"  # "single" (default) or "parallel"
+```
+
+Two ready-to-run configs are provided:
+
+| Config Path | Description |
+|-------------|-------------|
+| `configs/gxma/poc_stage1/gxma_parallel_fusion_config.yaml` | Parallel fusion, frozen CLIP |
+| `configs/gxma/poc_stage1/gxma_parallel_endtoend_finetune.yaml` | Parallel fusion + LoRA fine-tuning of CLIP |
+
+Launch example:
+
+```bash
+# Parallel fusion with frozen CLIP
+python src/training/train_gxma.py \
+  --config configs/gxma/poc_stage1/gxma_parallel_fusion_config.yaml \
+  --mode fusion
+
+# Parallel fusion + LoRA fine-tuning (batch size 64)
+python src/training/train_gxma.py \
+  --config configs/gxma/poc_stage1/gxma_parallel_endtoend_finetune.yaml \
+  --mode fusion
+```
+
+**Note:** Frequency extraction is still executed on CPU via NumPy/ SciPy /
+PyWavelets.  The additional attention streams therefore add negligible GPU
+memory overhead compared to the single-stream version.
+
 ## Components
 
 - **frequency_extractors.py** – Contains implementations of three frequency
@@ -12,36 +74,30 @@ classifier.
   1. Radial Average Spectrum
   2. Block DCT coefficient statistics
   3. Wavelet coefficient histogram
-  The extracted vectors are concatenated into a 256‑dimensional descriptor.
-- **clip_semantics.py** – Provides `CLIPCLSExtractor` which extracts the global
-  `[CLS]` token from OpenAI's CLIP ViT-L/14 model.
-- **gxma_fusion_detector.py** – Defines the `GXMAFusionDetector` model that
-  fuses the frequency descriptor and CLIP semantics using cross attention and
-  predicts real vs. AI-generated images.
+  The extracted vectors are concatenated into a 256-dimensional descriptor.
+- **clip_semantics.py** – `CLIPCLSExtractor` loads the vision tower of
+  OpenAI CLIP ViT-L/14 and optionally injects *LoRA* adapters via PEFT.
+- **gxma_fusion_detector.py** – Houses both fusion strategies:
+  - `CrossAttentionFusion` (*Strategy A*, 1-to-1)
+  - `ParallelCrossAttentionFusion` (*Strategy B*, 1-to-3)
+  plus the high-level `GXMAFusionDetector` wrapper.
 
-The design is intentionally modular so future frequency methods or different
-VLM embeddings can be swapped in easily.
+## Training Quick-Start
 
-## Training
-
-To train the GXMA Fusion Detector, use the `train_gxma.py` script located in `src/training`. You need to provide a configuration file.
+See the *Configuration* section above for details.  In short:
 
 ```bash
-python src/training/train_gxma.py --config configs/gxma_fusion_config.yaml
+# Single-stream baseline (Tier-1)
+python src/training/train_gxma.py --config configs/gxma/poc_stage1/gxma_fusion_config.yaml --mode fusion
+
+# Parallel streams (Tier-2, current SOTA baseline in this repo)
+python src/training/train_gxma.py --config configs/gxma/poc_stage1/gxma_parallel_fusion_config.yaml --mode fusion
 ```
 
-### Configuration
-
-The training process is controlled by a YAML configuration file (`configs/gxma_fusion_config.yaml`). Key parameters include:
-
-- **general**: `output_dir`, `experiment_name`, `seed`, `gpu_id`.
-- **model**: `hidden_dim`, `num_heads`, `num_classes` for the detector architecture.
-- **data**: `base_data_dir`, sample counts, `batch_size`, `num_workers`.
-- **training**: `num_epochs`, `learning_rate`, `optimizer`, and settings for:
-    - **scheduler**: Learning rate scheduler (e.g., `cosine_with_warmup`) with `warmup_steps`.
-    - **early_stopping**: `monitor` (`val_acc` or `val_loss`), `patience`, and `threshold` to prevent overfitting.
-
-The script will train the model, perform validation at each epoch, save the best model based on the monitored metric, and finally evaluate the best model on the test set. Results, including training history and the final configuration, are saved in the specified output directory.
+All configs inherit sane defaults; feel free to modify `hidden_dim`, learning
+rate, dataset paths, etc.  Each run will create
+`results/gxma_runs/<experiment_name>/` containing checkpoints, TensorBoard
+logs and JSON metrics.
 
 ## Ablation Study
 

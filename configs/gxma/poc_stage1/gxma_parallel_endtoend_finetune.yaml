@@ -1,0 +1,57 @@
+# Configuration for GXMA Parallel Fusion + End-to-End LoRA Fine-tune
+
+general:
+  output_dir: "results/gxma_runs"
+  experiment_name: "gxma_parallel_fusion_lora_poc_genimage"
+  seed: 42
+  gpu_id: 0
+
+model:
+  hidden_dim: 256
+  num_heads: 4
+  num_classes: 2
+  freq_methods: ["radial", "dct", "wavelet"]
+  fusion_strategy: "parallel"
+  lora:
+    enable: true
+    r: 8
+    alpha: 16
+    dropout: 0.1
+    target_modules: ["q_proj", "v_proj"]
+
+data:
+  base_data_dir: "/raid/dannyliu/dataset/GAI_Dataset/genimage/genimage_poc"
+  train_split_name: "train"
+  val_split_name: "val"
+  test_split_name: "test"
+  train_samples_per_class: null
+  val_samples_per_class: null
+  test_samples_per_class: null
+  batch_size: 64      # LoRA 需較小 batch 以免顯存爆炸
+  num_workers: 4
+  class_to_idx:
+    nature: 0
+    ai: 1
+
+training:
+  optimizer: "adamw"
+  learning_rate: 1e-4
+  weight_decay: 0.0
+  num_epochs: 2000
+  scheduler:
+    name: "cosine_with_warmup"
+    warmup_steps: 15
+  early_stopping:
+    monitor: "val_auc"
+    patience: 40
+    threshold: 0.001
+
+evaluation:
+  batch_size: 64
+  extra_tests:
+    - name: "chameleon_poc"
+      base_data_dir: "/raid/dannyliu/dataset/GAI_Dataset/chameleon_poc"
+      split_name: ""
+      class_to_idx:
+        nature: 0
+        ai: 1 

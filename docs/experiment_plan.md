@@ -145,10 +145,18 @@ Then launch:
 python src/training/train_gxma.py --config configs/your_new.yaml --mode fusion
 ```
 
-#### 7.5 Future Extensions
+#### 7.5 Latest Updates (2025-06-16)
 
-* Add Florence-2 semantics or patch-level tokens.
-* Implement parallel-attention / gating strategies (see code TODOs).
+* **Parallel Attention Streams implemented** – `ParallelCrossAttentionFusion` now
+  active; use `fusion_strategy: parallel` in YAML.  Ready-made configs are
+  available under `configs/gxma/poc_stage1/`.
+* New LoRA fine-tune config to train the semantic branch end-to-end while
+  keeping frequency extractors fixed.
+
+#### 7.6 Roadmap
+
+* Add Florence-2 semantics or patch-level tokens (Tier-3 experiments).
+* Implement Meta-Gate (Strategy C) for dynamic weighting of frequency experts.
 * Support mixed-precision training and multi-GPU.
 
 ## Experiment Schedule

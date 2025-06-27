@@ -2,7 +2,7 @@
 
 general:
   output_dir: "results/gxma_runs"  # Base directory for all outputs
-  experiment_name: "gxma_fusion_poc_genimage"  # Subdirectory name for this run
+  experiment_name: "gxma_sem_only_poc_genimage"  # Subdirectory name for this run
   seed: 42
   gpu_id: 1  # GPU ID to use
 
