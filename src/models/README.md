@@ -19,6 +19,20 @@ This module contains model architectures for AI-generated image detection. It in
 
 ## Available Models
 
+### GXMA Fusion Detector
+
+The GXMA detector fuses *frequency fingerprints* (FFT, DCT, Wavelet) with
+CLIP semantics.  Two fusion strategies are available:
+
+1. **Tier-1 (single-stream)** – `CrossAttentionFusion` (1 Query ⇆ 1 KV).
+2. **Tier-2 (parallel streams)** – `ParallelCrossAttentionFusion` (1 Query ⇆ 3 KV)
+   introduced in **2025-06-16**.
+
+Refer to `src/models/gxma/README.md` for architecture details and to
+`configs/gxma/poc_stage1/` for ready-made training configs.
+
+---
+
 ### Baseline Models
 
 #### ResNet50Classifier
@@ -288,7 +302,6 @@ class CustomVLMModelWrapper(BaseVLM):
         #     inputs = {k: v.to("cuda") for k, v in inputs.items()}
         # with torch.no_grad():
         #     outputs = self.model(**inputs) # This depends on the model type
-        # Implement logic to derive scores for each prompt
         print(f"CustomVLM {self.model_name} predicting for image and prompts: {text_prompts}") # Placeholder
         results = {prompt: 0.5 for prompt in text_prompts} # Placeholder
         return results

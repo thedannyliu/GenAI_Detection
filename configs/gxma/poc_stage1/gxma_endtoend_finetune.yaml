@@ -2,15 +2,22 @@
 
 general:
   output_dir: "results/gxma_runs"  # Base directory for all outputs
-  experiment_name: "gxma_fusion_poc_genimage"  # Subdirectory name for this run
+  experiment_name: "gxma_fusion_lora_poc_genimage"  # Subdirectory name for this run
   seed: 42
-  gpu_id: 1  # GPU ID to use
+  gpu_id: 2  # GPU ID to use
 
 model:
   # Parameters for the GXMAFusionDetector model
   hidden_dim: 256
   num_heads: 4
   num_classes: 2
+  freq_methods: ["radial", "dct", "wavelet"]
+  lora:                         # ← 新增區塊
+    enable: true                # 開啟 LoRA
+    r: 8                        # Rank (越大越強但顯存也增)
+    alpha: 16                   # Scaling 係數 (= r * 2 通常不錯)
+    dropout: 0.1                # LoRA dropout
+    target_modules: ["q_proj", "v_proj"]  # 套用到 CLIP ViT 的 Q / V 投影
 
 data:
   # 指向 POC 資料集根目錄
@@ -23,7 +30,7 @@ data:
   train_samples_per_class: null
   val_samples_per_class: null
   test_samples_per_class: null
-  batch_size: 512
+  batch_size: 64
   num_workers: 4
   class_to_idx:
     nature: 0
@@ -43,7 +50,7 @@ training:
     threshold: 0.001     # 指標至少提升 0.001 才算進步
 
 evaluation:
-  batch_size: 512
+  batch_size: 64
   extra_tests:
     - name: "chameleon_poc"
       base_data_dir: "/raid/dannyliu/dataset/GAI_Dataset/chameleon_poc"

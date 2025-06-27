@@ -1,29 +1,28 @@
-# Configuration for GXMA Fusion Detector Training
+# Configuration for GXMA Parallel Fusion Detector Training (Strategy B)
 
 general:
-  output_dir: "results/gxma_runs"  # Base directory for all outputs
-  experiment_name: "gxma_fusion_poc_genimage"  # Subdirectory name for this run
+  output_dir: "results/gxma_runs"             # Base directory for all outputs
+  experiment_name: "gxma_parallel_fusion_poc_genimage"  # Subdirectory name for this run
   seed: 42
-  gpu_id: 1  # GPU ID to use
+  gpu_id: 1                                    # GPU ID to use
 
 model:
   # Parameters for the GXMAFusionDetector model
   hidden_dim: 256
   num_heads: 4
   num_classes: 2
+  freq_methods: ["radial", "dct", "wavelet"]  # 三種頻域特徵
+  fusion_strategy: "parallel"                  # <- 新增：啟用 Strategy B
 
 data:
-  # 指向 POC 資料集根目錄
   base_data_dir: "/raid/dannyliu/dataset/GAI_Dataset/genimage/genimage_poc"
-  # 指定各 split 名稱
   train_split_name: "train"
   val_split_name: "val"
-  test_split_name: "test"  # 這會在訓練程式內作為預設 test loader
-  # 若填 null 則表示取用該 split 內全部影像
+  test_split_name: "test"
   train_samples_per_class: null
   val_samples_per_class: null
   test_samples_per_class: null
-  batch_size: 512
+  batch_size: 1024
   num_workers: 4
   class_to_idx:
     nature: 0
@@ -38,16 +37,16 @@ training:
     name: "cosine_with_warmup"
     warmup_steps: 15
   early_stopping:
-    monitor: "val_auc"  # 與主要指標一致
-    patience: 40         # 連續 40 個 epoch 無提升才停
-    threshold: 0.001     # 指標至少提升 0.001 才算進步
+    monitor: "val_auc"
+    patience: 40
+    threshold: 0.001
 
 evaluation:
-  batch_size: 512
+  batch_size: 1024
   extra_tests:
     - name: "chameleon_poc"
       base_data_dir: "/raid/dannyliu/dataset/GAI_Dataset/chameleon_poc"
-      split_name: ""  # 直接在根目錄下有 ai/nature
+      split_name: ""
       class_to_idx:
         nature: 0
-        ai: 1
+        ai: 1 

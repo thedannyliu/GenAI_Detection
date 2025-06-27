@@ -113,13 +113,35 @@ This approach trains a linear classifier on top of frozen image embeddings extra
 
 **For GXMA Fusion Detector Training:**
 
-The GXMA Fusion Detector integrates frequency features with CLIP semantics.
-1.  **Configure**: Edit `configs/gxma_fusion_config.yaml` with dataset paths and parameters.
-2.  **Run training script**:
-    ```bash
-    python src/training/train_gxma.py --config configs/gxma_fusion_config.yaml
-    ```
-    This script trains the model and evaluates on the test split, saving results under `results/gxma_runs/<experiment_name>/`.
+The GXMA detector now supports two fusion modes:
+
+| Tier | Fusion Strategy | YAML Config | Notes |
+|------|-----------------|-------------|-------|
+| 1 | Single cross-attention | `configs/gxma/poc_stage1/gxma_fusion_config.yaml` | Baseline |
+| 2 | **Parallel Attention Streams** | `configs/gxma/poc_stage1/gxma_parallel_fusion_config.yaml` | New default |
+| 2-FT | Parallel + LoRA fine-tune | `configs/gxma/poc_stage1/gxma_parallel_endtoend_finetune.yaml` | End-to-end training |
+
+Run examples:
+
+```bash
+# Tier-1 baseline
+python src/training/train_gxma.py \
+  --config configs/gxma/poc_stage1/gxma_fusion_config.yaml \
+  --mode fusion
+
+# Tier-2 parallel fusion (frozen CLIP)
+python src/training/train_gxma.py \
+  --config configs/gxma/poc_stage1/gxma_parallel_fusion_config.yaml \
+  --mode fusion
+
+# Tier-2 with LoRA fine-tuning
+python src/training/train_gxma.py \
+  --config configs/gxma/poc_stage1/gxma_parallel_endtoend_finetune.yaml \
+  --mode fusion
+```
+
+Each run dumps checkpoints, TensorBoard logs, and JSON metrics to
+`results/gxma_runs/<experiment_name>/`.
 
 ### Evaluation
 

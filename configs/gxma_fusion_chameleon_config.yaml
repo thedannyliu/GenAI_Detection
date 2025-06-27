@@ -1,0 +1,49 @@
+# Configuration for GXMA Fusion Detector Training on Chameleon dataset
+
+general:
+  output_dir: "results/gxma_runs"
+  experiment_name: "gxma_fusion_chameleon_sem_only"
+  seed: 42
+  gpu_id: 1
+
+model:
+  hidden_dim: 256
+  num_heads: 4
+  num_classes: 2
+
+data:
+  # Chameleon 資料集路徑（資料夾中僅有 test 子資料夾，其下 0_real / 1_fake）
+  base_data_dir: "/raid/dannyliu/dataset/GAI_Dataset/Chameleon"
+  # 因 Chameleon 只有 test 子資料夾，以下 split 名稱都設定為 test
+  train_split_name: "test"
+  val_split_name: "test"
+  test_split_name: "test"
+
+  # 依照資料夾命名提供 class_to_idx
+  class_to_idx:
+    "0_real": 0
+    "1_fake": 1
+
+  # 每類欲抽取樣本數；若留空 (null) 則使用全部
+  train_samples_per_class: 10000
+  val_samples_per_class: 1000
+  test_samples_per_class: 1000
+
+  batch_size: 256
+  num_workers: 4
+
+training:
+  optimizer: "adamw"
+  learning_rate: 1e-4
+  weight_decay: 0.0
+  num_epochs: 2000
+  scheduler:
+    name: "cosine_with_warmup"
+    warmup_steps: 150
+  early_stopping:
+    monitor: "val_auc"
+    patience: 50
+    threshold: 0.001
+
+evaluation:
+  batch_size: 256 

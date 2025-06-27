@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from typing import List
+from typing import List, Optional
 from PIL import Image
 import torchvision.transforms as T
 
@@ -26,37 +26,137 @@ class CrossAttentionFusion(nn.Module):
         return fused.squeeze(1)
 
 
+# =========================== Strategy B: Parallel Attention Streams ===========================
+
+
+class ParallelCrossAttentionFusion(nn.Module):
+    """Parallel cross-attention streams – one dedicated attention module per frequency feature.
+
+    The semantic feature serves as the unified Query.  Each frequency feature (e.g., radial FFT,
+    DCT, Wavelet) has its own Key/Value projections and attention head.  The outputs from all
+    streams are aggregated (summed by default) to obtain the final fused representation.
+    """
+
+    def __init__(
+        self,
+        freq_dims: dict,
+        sem_dim: int,
+        hidden_dim: int = 256,
+        num_heads: int = 4,
+        aggregate: str = "sum",
+    ) -> None:
+        super().__init__()
+
+        if aggregate not in {"sum", "concat"}:
+            raise ValueError("aggregate must be 'sum' or 'concat'")
+
+        self.aggregate = aggregate
+
+        # Shared projection for Query (semantic feature)
+        self.query_proj = nn.Linear(sem_dim, hidden_dim)
+
+        # Per-method projections & attention modules
+        self.key_projs = nn.ModuleDict()
+        self.value_projs = nn.ModuleDict()
+        self.attn_modules = nn.ModuleDict()
+
+        for method, dim in freq_dims.items():
+            self.key_projs[method] = nn.Linear(dim, hidden_dim)
+            self.value_projs[method] = nn.Linear(dim, hidden_dim)
+            self.attn_modules[method] = nn.MultiheadAttention(
+                embed_dim=hidden_dim, num_heads=num_heads, batch_first=True
+            )
+
+    def forward(self, freq_feat_dict: dict, sem_feat: torch.Tensor) -> torch.Tensor:
+        """Args
+        -----
+        freq_feat_dict : Dict[str, Tensor]
+            Mapping from method name to frequency feature tensor with shape (B, dim_i).
+        sem_feat : Tensor
+            Semantic feature tensor with shape (B, sem_dim).
+        Returns
+        -------
+        fused : Tensor
+            Fused representation with shape (B, hidden_dim) when aggregate == 'sum', otherwise
+            (B, hidden_dim * n_methods) for 'concat'.
+        """
+
+        q = self.query_proj(sem_feat).unsqueeze(1)  # (B, 1, H)
+
+        outputs = []
+        for method, feat in freq_feat_dict.items():
+            k = self.key_projs[method](feat).unsqueeze(1)  # (B, 1, H)
+            v = self.value_projs[method](feat).unsqueeze(1)
+            out, _ = self.attn_modules[method](q, k, v)  # (B, 1, H)
+            outputs.append(out)
+
+        if self.aggregate == "sum":
+            fused = torch.stack(outputs, dim=0).sum(dim=0).squeeze(1)  # (B, H)
+        else:  # concat
+            fused = torch.cat([o.squeeze(1) for o in outputs], dim=-1)  # (B, H * n_methods)
+
+        return fused
+
+
 class GXMAFusionDetector(nn.Module):
     """PoC detector combining frequency fingerprints and CLIP semantics."""
 
-    def __init__(self, hidden_dim: int = 256, num_heads: int = 4, num_classes: int = 2) -> None:
+    def __init__(self, hidden_dim: int = 256, num_heads: int = 4, num_classes: int = 2, freq_methods: Optional[List[str]] = None, model_cfg: Optional[dict] = None) -> None:
         super().__init__()
-        self.freq_extractor = FrequencyFeatureExtractor()
-        self.sem_extractor = CLIPCLSExtractor()
-        # frequency vector length: 128 + 64 + 64 = 256
-        freq_dim = 256
-        # Determine semantic feature dimension dynamically from the extractor
+
+        if model_cfg is None:
+            model_cfg = {}
+
+        # Frequency & semantic extractors
+        self.freq_extractor = FrequencyFeatureExtractor(methods=freq_methods)
+        self.sem_extractor = CLIPCLSExtractor(lora_cfg=model_cfg.get("lora", None))
+
+        # Determine feature dimensions
         sem_dim = self.sem_extractor.hidden_dim
-        self.fusion = CrossAttentionFusion(freq_dim, sem_dim, hidden_dim, num_heads)
+
+        # Decide fusion strategy (single vs. parallel)
+        self.fusion_strategy = model_cfg.get("fusion_strategy", "single").lower()
+
+        if self.fusion_strategy == "single":
+            freq_dim = self.freq_extractor.output_dim
+            self.fusion = CrossAttentionFusion(freq_dim, sem_dim, hidden_dim, num_heads)
+            fusion_output_dim = hidden_dim
+        elif self.fusion_strategy == "parallel":
+            # Build mapping: method -> dim
+            freq_dims = {m: self.freq_extractor.METHOD_DIM[m] for m in self.freq_extractor.methods}
+            self.fusion = ParallelCrossAttentionFusion(freq_dims, sem_dim, hidden_dim, num_heads, aggregate="sum")
+            fusion_output_dim = hidden_dim  # 'sum' aggregation keeps dim size
+        else:
+            raise ValueError(f"Unsupported fusion_strategy: {self.fusion_strategy}")
+
+        # Classifier head (2-layer MLP)
         self.classifier = nn.Sequential(
-            nn.Linear(hidden_dim, 128),
+            nn.Linear(fusion_output_dim, 128),
             nn.ReLU(),
-            nn.Linear(128, num_classes)
+            nn.Linear(128, num_classes),
         )
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         # 'images' is a batch of tensors on the target device (e.g., cuda:1)
         sem_feat = self.sem_extractor(images)
 
-        # freq_extractor expects a single CPU tensor.
-        freq_feats = [self.freq_extractor(img.cpu()) for img in images]
-        freq_feat = torch.stack(freq_feats, dim=0)
+        # Extract frequency features (on CPU to save GPU memory)
+        freq_feats = [self.freq_extractor(img.cpu()) for img in images]  # list of (D_total,) tensors
+        freq_feat_full = torch.stack(freq_feats, dim=0)  # (B, D_total)
 
-        # Move the computed frequency features to the target device.
-        # The target device is determined from the model's parameters.
         target_device = next(self.parameters()).device
-        freq_feat = freq_feat.to(target_device)
+        freq_feat_full = freq_feat_full.to(target_device)
 
-        fused = self.fusion(freq_feat, sem_feat)
+        if self.fusion_strategy == "single":
+            fused = self.fusion(freq_feat_full, sem_feat)
+        else:  # parallel
+            # Split concatenated frequency vector into per-method tensors
+            freq_dict = {}
+            start = 0
+            for method in self.freq_extractor.methods:
+                dim = self.freq_extractor.METHOD_DIM[method]
+                freq_dict[method] = freq_feat_full[:, start : start + dim]
+                start += dim
+            fused = self.fusion(freq_dict, sem_feat)
         logits = self.classifier(fused)
         return logits

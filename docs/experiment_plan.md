@@ -63,6 +63,102 @@ Beyond the main comparisons, we plan several advanced experiments:
 * **Explainability Analysis:** Use Grad-CAM on our best-performing models to visualize regions influencing predictions.
 * **Robustness Testing:** Simulate attempts to "fool" detectors with image manipulations like JPEG compression, noise, or blurring.
 
+### 7. GXMA Fusion PoC Workflow (2025-06-16)
+
+This section documents the **GXMA Fusion** proof-of-concept pipeline that combines
+frequency fingerprints (Radial FFT + DCT + DWT) with CLIP semantics via
+cross-attention.  The reference implementation lives in:
+
+* Model: `src/models/gxma/`
+* Training script: `src/training/train_gxma.py`
+* Default config: `configs/gxma_fusion_config.yaml`
+
+#### 7.1 Datasets
+
+| Dataset | Purpose | Split(s) used | Size | Path |
+|---------|---------|---------------|------|------|
+| **genimage_poc** | Main training/validation/test | train / val / test | 64k / 8k / 8k | `/raid/dannyliu/dataset/GAI_Dataset/genimage/genimage_poc` |
+| **chameleon_poc** | Out-of-distribution test | — (root has `ai/` & `nature/`) | 10k | `/raid/dannyliu/dataset/GAI_Dataset/chameleon_poc` |
+
+Both datasets are constructed with fixed seed `42`; see the data README for
+exact generation steps.
+
+#### 7.2 Configuration Highlights
+
+```yaml
+general:
+  experiment_name: "gxma_fusion_poc_genimage"
+data:
+  base_data_dir: "/…/genimage_poc"
+  train_split_name: train
+  val_split_name: val
+  test_split_name: test
+  class_to_idx: {nature: 0, ai: 1}
+model:
+  freq_methods: ["radial", "dct"]   # choose any of radial, dct, wavelet
+evaluation:
+  batch_size: 128
+  extra_tests:            # new field handled by train_gxma.py
+    - name: "chameleon_poc"
+      base_data_dir: "/…/chameleon_poc"
+      split_name: ""      # root dir contains ai/ & nature/
+      class_to_idx: {nature: 0, ai: 1}
+training:
+  early_stopping:
+    monitor: val_auc      # primary metric
+```
+
+Key points:
+* **extra_tests** allows an arbitrary list of external datasets that will be
+  evaluated *after* the main training loop using the best checkpoint.
+* Early stopping now supports `val_auc` & `val_f1` in addition to accuracy
+  or loss.
+* The training script copies the exact YAML into
+  `<output_dir>/config_used.yaml` for full reproducibility.
+
+#### 7.3 Output Artefacts
+
+After a run you should find the following structure (example GPU-1 run):
+
+```text
+results/gxma_runs/gxma_fusion_poc_genimage/
+├── best_model.pth                # checkpoint with highest val AUC
+├── config_used.yaml              # frozen copy of the YAML
+├── tensorboard/                  # TB event files (loss/acc/auc/f1)
+├── training_results.json         # metrics & curves
+│   ├─ history.*                  # per-epoch arrays
+│   ├─ test_* (genimage_poc.test) # loss/acc/auc/f1 + confusion matrix
+│   └─ extra_tests/               # dict per external dataset
+│       └─ chameleon_poc/ …       # loss/acc/auc/f1 + confusion matrix
+└── …
+```
+
+#### 7.4 Re-running on a Different Dataset
+
+1. Duplicate the YAML file.
+2. Change `experiment_name` and the `data.*` paths.
+3. (Optional) Edit `extra_tests` to include additional OOD datasets.
+
+Then launch:
+
+```bash
+python src/training/train_gxma.py --config configs/your_new.yaml --mode fusion
+```
+
+#### 7.5 Latest Updates (2025-06-16)
+
+* **Parallel Attention Streams implemented** – `ParallelCrossAttentionFusion` now
+  active; use `fusion_strategy: parallel` in YAML.  Ready-made configs are
+  available under `configs/gxma/poc_stage1/`.
+* New LoRA fine-tune config to train the semantic branch end-to-end while
+  keeping frequency extractors fixed.
+
+#### 7.6 Roadmap
+
+* Add Florence-2 semantics or patch-level tokens (Tier-3 experiments).
+* Implement Meta-Gate (Strategy C) for dynamic weighting of frequency experts.
+* Support mixed-precision training and multi-GPU.
+
 ## Experiment Schedule
 
 | Week | Tasks |

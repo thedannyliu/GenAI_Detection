@@ -2,7 +2,7 @@ import torch
 import numpy as np
 from scipy.fftpack import dct
 import pywt
-from typing import Tuple
+from typing import Tuple, List, Dict, Optional
 
 
 def radial_average_spectrum(image: torch.Tensor, num_bins: int = 128) -> torch.Tensor:
@@ -63,11 +63,34 @@ def wavelet_statistics(
 class FrequencyFeatureExtractor:
     """Extract frequency features using multiple methods and concatenate them."""
 
-    def __init__(self) -> None:
-        pass
+    METHOD_DIM: Dict[str, int] = {
+        "radial": 128,
+        "dct": 64,
+        "wavelet": 64,
+    }
+
+    def __init__(self, methods: Optional[List[str]] = None) -> None:
+        """Create extractor for specified methods.
+
+        Args:
+            methods: list containing any of {"radial", "dct", "wavelet"}.  If None, all three are used.
+        """
+        if methods is None:
+            methods = ["radial", "dct", "wavelet"]
+        # Validate
+        invalid = set(methods) - set(self.METHOD_DIM.keys())
+        if invalid:
+            raise ValueError(f"Unsupported frequency methods: {invalid}")
+        self.methods = methods
+        # Pre-compute output dimension
+        self.output_dim = sum(self.METHOD_DIM[m] for m in self.methods)
 
     def __call__(self, image: torch.Tensor) -> torch.Tensor:
-        f_radial = radial_average_spectrum(image)
-        f_dct = dct_statistics(image)
-        f_wavelet = wavelet_statistics(image)
-        return torch.cat([f_radial, f_dct, f_wavelet], dim=-0)
+        feats = []
+        if "radial" in self.methods:
+            feats.append(radial_average_spectrum(image))
+        if "dct" in self.methods:
+            feats.append(dct_statistics(image))
+        if "wavelet" in self.methods:
+            feats.append(wavelet_statistics(image))
+        return torch.cat(feats, dim=-0)
