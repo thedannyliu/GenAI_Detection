@@ -136,13 +136,20 @@ class GXMAFusionDetector(nn.Module):
             nn.Linear(128, num_classes),
         )
 
-    def forward(self, images: torch.Tensor) -> torch.Tensor:
-        # 'images' is a batch of tensors on the target device (e.g., cuda:1)
+    def forward(self, images: torch.Tensor, freq_feat_full: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Forward pass.
+
+        Args:
+            images: batch of image tensors (C,H,W) on device.
+            freq_feat_full: optional pre-computed frequency feature tensor of shape (B, D_total).
+        """
+        # Semantic feature on device
         sem_feat = self.sem_extractor(images)
 
-        # Extract frequency features (on CPU to save GPU memory)
-        freq_feats = [self.freq_extractor(img.cpu()) for img in images]  # list of (D_total,) tensors
-        freq_feat_full = torch.stack(freq_feats, dim=0)  # (B, D_total)
+        # If frequency features not supplied, compute on-the-fly (original fallback)
+        if freq_feat_full is None:
+            freq_feats = [self.freq_extractor(img.cpu()) for img in images]
+            freq_feat_full = torch.stack(freq_feats, dim=0)
 
         target_device = next(self.parameters()).device
         freq_feat_full = freq_feat_full.to(target_device)
@@ -150,7 +157,6 @@ class GXMAFusionDetector(nn.Module):
         if self.fusion_strategy == "single":
             fused = self.fusion(freq_feat_full, sem_feat)
         else:  # parallel
-            # Split concatenated frequency vector into per-method tensors
             freq_dict = {}
             start = 0
             for method in self.freq_extractor.methods:

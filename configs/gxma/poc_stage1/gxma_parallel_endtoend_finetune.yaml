@@ -27,7 +27,7 @@ data:
   train_samples_per_class: null
   val_samples_per_class: null
   test_samples_per_class: null
-  batch_size: 64      # LoRA 需較小 batch 以免顯存爆炸
+  batch_size: 128      # LoRA 需較小 batch 以免顯存爆炸
   num_workers: 4
   class_to_idx:
     nature: 0
@@ -47,7 +47,7 @@ training:
     threshold: 0.001
 
 evaluation:
-  batch_size: 64
+  batch_size: 128
   extra_tests:
     - name: "chameleon_poc"
       base_data_dir: "/raid/dannyliu/dataset/GAI_Dataset/chameleon_poc"

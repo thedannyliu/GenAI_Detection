@@ -48,6 +48,10 @@ class CLIPCLSExtractor(nn.Module):
         # Expose hidden dimension for downstream modules
         self.hidden_dim = self.model.config.hidden_size
 
+        # Move model to half precision if cuda available to save memory & speed
+        if torch.cuda.is_available():
+            self.model = self.model.to(dtype=torch.float16)
+
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         """Extract features from a batch of image tensors."""
         # The CLIP processor is designed to work with PIL Images and handles its own transformations.
@@ -61,14 +65,16 @@ class CLIPCLSExtractor(nn.Module):
         inputs = self.processor(images=pil_images, return_tensors="pt", do_rescale=False).to(device)
         pixel_values = inputs["pixel_values"] if isinstance(inputs, dict) else inputs.pixel_values
 
-        # Run forward pass – explicitly pass pixel_values to avoid text kwargs
-        if self._lora_active:
-            outputs = self.model.base_model(pixel_values=pixel_values)
-        elif self._requires_grad:
-            outputs = self.model(pixel_values=pixel_values)
-        else:
-            with torch.no_grad():
+        # Run forward pass – use AMP autocast for faster inference on A100
+        autocast_enabled = pixel_values.device.type == "cuda"
+        with torch.cuda.amp.autocast(enabled=autocast_enabled):
+            if self._lora_active:
+                outputs = self.model.base_model(pixel_values=pixel_values)
+            elif self._requires_grad:
                 outputs = self.model(pixel_values=pixel_values)
+            else:
+                with torch.no_grad():
+                    outputs = self.model(pixel_values=pixel_values)
         # The last hidden state is the sequence of patch embeddings + CLS token
         # The CLS token is the first one in the sequence
         cls_token_embedding = outputs.last_hidden_state[:, 0, :]

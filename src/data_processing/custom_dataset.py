@@ -6,6 +6,12 @@ from PIL import Image
 import torchvision.transforms as transforms
 import random
 
+# Optional: frequency feature extraction
+try:
+    from src.models.gxma.frequency_extractors import FrequencyFeatureExtractor
+except ImportError:
+    FrequencyFeatureExtractor = None  # type: ignore
+
 class GenImageDataset(Dataset):
     """
     Dataset class for loading GenImage dataset.
@@ -19,7 +25,9 @@ class GenImageDataset(Dataset):
         class_to_idx: Optional[Dict[str, int]] = None,
         num_samples_per_class: Optional[int] = None, # Added for sampling
         exclude_files: Optional[Set[str]] = None,    # Added for exclusion (used by test set)
-        seed: int = 42 # Added for reproducibility of sampling
+        seed: int = 42, # Added for reproducibility of sampling
+        include_freq_features: bool = False,
+        freq_methods: Optional[List[str]] = None,
     ):
         """
         Initialize dataset.
@@ -31,6 +39,8 @@ class GenImageDataset(Dataset):
             num_samples_per_class (Optional[int]): Number of images to sample per class. If None, all images are used.
             exclude_files (Optional[Set[str]]): A set of absolute image paths to exclude.
             seed (int): Random seed for sampling.
+            include_freq_features (bool): Whether to include frequency features
+            freq_methods (Optional[List[str]]): List of frequency feature methods to use
         """
         self.root_dir = root_dir
         self.data_split_dir = split # Directly use the provided split name
@@ -39,6 +49,11 @@ class GenImageDataset(Dataset):
         self.num_samples_per_class = num_samples_per_class
         self.exclude_files = exclude_files or set()
         self.seed = seed
+        self.include_freq_features = include_freq_features
+        if self.include_freq_features:
+            if FrequencyFeatureExtractor is None:
+                raise RuntimeError("FrequencyFeatureExtractor not available but include_freq_features=True")
+            self.freq_extractor = FrequencyFeatureExtractor(methods=freq_methods)
         
         # Setup paths
         self.nature_dir = os.path.join(root_dir, self.data_split_dir, "nature")
@@ -106,7 +121,7 @@ class GenImageDataset(Dataset):
     def __len__(self) -> int:
         return len(self.image_paths)
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
+    def __getitem__(self, idx: int):
         """
         Get a single data sample.
         Args:
@@ -122,7 +137,12 @@ class GenImageDataset(Dataset):
         if self.transform:
             image = self.transform(image)
             
-        return image, label
+        if self.include_freq_features:
+            # Compute frequency feature on CPU; returns Tensor
+            freq_feat = self.freq_extractor(image)
+            return image, freq_feat, label
+        else:
+            return image, label
 
     def get_image_paths(self) -> List[str]:
         """Returns the list of image paths used by this dataset instance."""
