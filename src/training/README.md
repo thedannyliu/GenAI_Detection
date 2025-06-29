@@ -447,6 +447,14 @@ This script trains a linear classifier (or a shallow MLP) on top of frozen image
     python src/training/clip_linear_probe_train.py --config configs/clip_linear_probe_config.yaml
     ```
 
+## Performance Note (2025-06-29)
+The GXMA training script has been refactored for higher throughput:
+
+* Frequency vectors are now generated inside `GenImageDataset` workers (`include_freq_features=True`), eliminating GPU↔CPU copies.
+* Default `DataLoader` uses `num_workers=8`, `pin_memory=True`, `persistent_workers=True`.
+* CLIP vision tower runs in half precision (`float16`) under AMP to cut memory and latency.
+* No YAML change is required; override `data.num_workers` or disable `include_freq_features` for ablation.
+
 ---
 
 *More training script details can be added here as the project evolves.* 
