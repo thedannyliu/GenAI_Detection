@@ -24,10 +24,12 @@ This document tracks the implementation status of the **GXMA – Frequency ✕ S
 
 ### New in v1.0 (this commit)
 • **ParallelCrossAttentionFusion** implemented (Tier-2).  
-• Detector now supports `fusion_strategy: parallel`.  
+• **HierarchicalGatedParallelFusion** implemented (Tier-2 ✕ Meta-Gate).  
+• Detector now supports `fusion_strategy: parallel` *and* `fusion_strategy: hierarchical`.  
 • Two new configs:  
   1. `gxma_parallel_fusion_config.yaml` (frozen CLIP)  
   2. `gxma_parallel_endtoend_finetune.yaml` (LoRA fine-tune).
+  3. `gxma_hierarchical_fusion_config.yaml` (Meta-Gate, frozen CLIP) – *new*
 • **Resume / Checkpointing** – training now saves `last.pth` (full state) every epoch and can resume via `--resume <path>`.
 • **Auto-merge logs** – when resuming, the script now (i) loads the previous `training_results.json` to append new epoch metrics, (ii) re-uses `config_used.yaml` from the run directory when `--config` is omitted.  TensorBoard continues seamlessly.
 • **Perf v1.1** – Speed-oriented refactor.
@@ -43,7 +45,7 @@ This document tracks the implementation status of the **GXMA – Frequency ✕ S
 ## 2. TODO 📝
 | Status | Item |
 |--------|------|
-| ⬜ | **Meta-Gate (Strategy C)** – softmax weights *g1-g3* on top of parallel streams |
+| ✅ | **Meta-Gate (Strategy C)** – softmax weights *g1-g3* on top of parallel streams |
 | ⬜ | **Patch-level semantics** – feed CLIP patch tokens + Transformer decoder (Tier-3) |
 | ⬜ | Expand datasets & ablation notebooks (Florence-2, unseen generators) |
 | ⬜ | Inference CLI for single-image detection |
@@ -56,6 +58,7 @@ This document tracks the implementation status of the **GXMA – Frequency ✕ S
 |---------|------|------------|
 | v0.1 | 2025-06-05 | Frequency & Semantic extractors + Tier-1 fusion |
 | v1.0 | 2025-06-16 | **Parallel Attention Streams, updated docs & configs** |
+| v1.1 | 2025-06-29 | **Hierarchical Meta-Gate Fusion + config support** |
 
 ---
 

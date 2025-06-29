@@ -1,17 +1,17 @@
-# Configuration for GXMA Parallel Fusion + End-to-End LoRA Fine-tune
+# Configuration for GXMA Hierarchical (Meta-Gate) Fusion + End-to-End LoRA Fine-tune
 
 general:
   output_dir: "results/gxma_runs"
-  experiment_name: "gxma_parallel_fusion_lora_poc_genimage"
+  experiment_name: "gxma_hierarchical_fusion_lora_poc_genimage"
   seed: 42
-  gpu_id: 1
+  gpu_id: 0
 
 model:
   hidden_dim: 256
   num_heads: 4
   num_classes: 2
   freq_methods: ["radial", "dct", "wavelet"]
-  fusion_strategy: "parallel"
+  fusion_strategy: "hierarchical"   # Strategy C – Meta-Gate
   lora:
     enable: true
     r: 8
@@ -27,7 +27,7 @@ data:
   train_samples_per_class: null
   val_samples_per_class: null
   test_samples_per_class: null
-  batch_size: 128      # LoRA 需較小 batch 以免顯存爆炸
+  batch_size: 128      # Adjust if GPU memory is limited
   num_workers: 4
   class_to_idx:
     nature: 0

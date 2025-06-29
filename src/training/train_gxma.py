@@ -249,7 +249,9 @@ def main(config_path: Optional[str], mode: str, resume_path: Optional[str] = Non
     num_val = data_cfg.get("val_samples_per_class")
     num_test = data_cfg.get("test_samples_per_class")
 
-    # Prepare datasets with pre-computed frequency features
+    use_freq = mode != "semantic"  # Semantic-only path does not need frequency vectors
+
+    # Prepare datasets (frequency features only if needed)
     train_dataset = GenImageDataset(
         dataset_root,
         split=train_split_name,
@@ -257,8 +259,8 @@ def main(config_path: Optional[str], mode: str, resume_path: Optional[str] = Non
         class_to_idx=class_map,
         num_samples_per_class=num_train,
         seed=seed,
-        include_freq_features=True,
-        freq_methods=freq_methods,
+        include_freq_features=use_freq,
+        freq_methods=freq_methods if use_freq else None,
     )
     val_dataset = GenImageDataset(
         dataset_root,
@@ -267,8 +269,8 @@ def main(config_path: Optional[str], mode: str, resume_path: Optional[str] = Non
         class_to_idx=class_map,
         num_samples_per_class=num_val,
         seed=seed + 1,
-        include_freq_features=True,
-        freq_methods=freq_methods,
+        include_freq_features=use_freq,
+        freq_methods=freq_methods if use_freq else None,
     )
     test_dataset = GenImageDataset(
         dataset_root,
@@ -277,8 +279,8 @@ def main(config_path: Optional[str], mode: str, resume_path: Optional[str] = Non
         class_to_idx=class_map,
         num_samples_per_class=num_test,
         seed=seed + 2,
-        include_freq_features=True,
-        freq_methods=freq_methods,
+        include_freq_features=use_freq,
+        freq_methods=freq_methods if use_freq else None,
     )
 
     batch_size = data_cfg.get("batch_size", 8)
@@ -298,21 +300,25 @@ def main(config_path: Optional[str], mode: str, resume_path: Optional[str] = Non
     print(f"  Val   set: {len(val_dataset)} images | batches: {len(val_dataset)//batch_size}")
     print(f"  Test  set: {len(test_dataset)} images | batches: {len(test_dataset)//batch_size}")
 
+    collate_fn_train = collate_with_freq if use_freq else vlm_collate_fn
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
-        collate_fn=collate_with_freq,
+        collate_fn=collate_fn_train,
         pin_memory=True,
         persistent_workers=True,
     )
+    collate_fn_eval = collate_with_freq if use_freq else vlm_collate_fn
+
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        collate_fn=collate_with_freq,
+        collate_fn=collate_fn_eval,
         pin_memory=True,
         persistent_workers=True,
     )
@@ -321,7 +327,7 @@ def main(config_path: Optional[str], mode: str, resume_path: Optional[str] = Non
         batch_size=eval_cfg.get("batch_size", batch_size),
         shuffle=False,
         num_workers=num_workers,
-        collate_fn=collate_with_freq,
+        collate_fn=collate_fn_eval,
         pin_memory=True,
         persistent_workers=True,
     )
