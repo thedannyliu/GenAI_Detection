@@ -85,7 +85,7 @@ here generally retain robust defaults in the training script.
 | num_heads | int | 4 | Heads in each `nn.MultiheadAttention` |
 | num_classes | int | 2 | Classes for final MLP |
 | freq_methods | list[str] | ["radial","dct","wavelet"] | Spectral descriptors to extract |
-| fusion_strategy | str | "single" | "single", "parallel", or "hierarchical" |
+| fusion_strategy | str | "single" | Controls **fusion tier**:<br>• `single` → Tier-1 (1-to-1)<br>• `parallel` → Tier-2 (Parallel Streams)<br>• `hierarchical` / `gated` → Tier-2 + Meta-Gate |
 
 #### model.lora (optional)
 | Key | Type | Default | Description |

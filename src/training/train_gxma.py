@@ -427,7 +427,18 @@ def main(config_path: Optional[str], mode: str, resume_path: Optional[str] = Non
         resume_file = Path(resume_path)
         if resume_file.exists():
             print(f"[Resume] Loading checkpoint from {resume_file} ...")
-            ckpt = torch.load(resume_file, map_location=device)
+            # NOTE: Starting from PyTorch 2.6 the default value for `weights_only` in
+            # `torch.load` changed from False → True which can break loading older
+            # checkpoints that store more than just tensor weights (e.g. optimizer
+            # state, numpy scalars, custom metadata).  Explicitly set
+            # `weights_only=False` to ensure full pickle loading.  Fall back to the
+            # older signature for compatibility with <2.6 installations where the
+            # argument is not recognised.
+            try:
+                ckpt = torch.load(resume_file, map_location=device, weights_only=False)
+            except TypeError:
+                # running on a PyTorch version < 2.6 where `weights_only` is not a valid kwarg
+                ckpt = torch.load(resume_file, map_location=device)
             model.load_state_dict(ckpt["model"])
             optimizer.load_state_dict(ckpt["optimizer"])
             try:
@@ -582,13 +593,20 @@ def main(config_path: Optional[str], mode: str, resume_path: Optional[str] = Non
             class_to_idx=class_map_extra,
             num_samples_per_class=num_samples_extra,
             seed=seed + 3,
+            include_freq_features=use_freq,
+            freq_methods=freq_methods if use_freq else None,
         )
+
+        collate_fn_extra = collate_with_freq if use_freq else vlm_collate_fn
+
         extra_loader = DataLoader(
             extra_dataset,
             batch_size=eval_cfg.get("batch_size", batch_size),
             shuffle=False,
             num_workers=num_workers,
-            collate_fn=collate_with_freq,
+            collate_fn=collate_fn_extra,
+            pin_memory=True,
+            persistent_workers=True,
         )
         print(f"[Stage] Extra Test evaluation on {ds_name} | images: {len(extra_dataset)}")
         extra_loss, extra_acc, extra_auc, extra_f1, extra_preds_tensor, extra_labels_tensor = evaluate(
