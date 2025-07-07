@@ -349,3 +349,5 @@ print(probs)
 ```
 
 The current implementation uses *stub* frequency experts.  To plug in real LoRA-based experts, extend `SimpleFrequencyExpert` or replace it with a PEFT-injected ViT block wrapper. 
+
+* Basic shape integrity tests live in `tests/test_r_vfid.py` (pytest).  Run `pytest -q` after installing dev dependencies.
