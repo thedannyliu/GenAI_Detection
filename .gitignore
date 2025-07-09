@@ -69,3 +69,5 @@ wandb/
 .coverage
 htmlcov/
 coverage.xml
+
+AIGCDetectionBenchMark/
