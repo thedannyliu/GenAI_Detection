@@ -22,3 +22,9 @@ def test_rvfid_forward_shape():
     images = torch.randn(4, 3, 224, 224)
     logits = model(images)
     assert logits.shape == (4, 2) 
+
+
+def test_lora_injected():
+    model = RvfidModel(num_experts=1)
+    lora_layers = [m for m in model.modules() if m.__class__.__name__ == "LoRALinear"]
+    assert len(lora_layers) > 0 

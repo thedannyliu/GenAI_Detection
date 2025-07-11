@@ -1,3 +1,4 @@
+# pyright: reportMissingImports=false
 from __future__ import annotations
 
 from typing import Literal
@@ -31,7 +32,11 @@ def _bicubic_upsample(x: torch.Tensor, scale: float = 2.0) -> torch.Tensor:
 
 def _lanczos_downsample(x: torch.Tensor, scale: float = 0.5) -> torch.Tensor:
     h, w = x.shape[-2:]
-    return F.interpolate(x, size=(int(h * scale), int(w * scale)), mode="lanczos")
+    try:
+        return F.interpolate(x, size=(int(h * scale), int(w * scale)), mode="lanczos")
+    except NotImplementedError:
+        # 某些 PyTorch 版本尚未支援 lanczos，退回 bicubic
+        return F.interpolate(x, size=(int(h * scale), int(w * scale)), mode="bicubic", align_corners=False)
 
 
 class _DnCNN(nn.Module):
@@ -78,14 +83,19 @@ class FrequencyExpert(nn.Module):
         embed_dim: int = 768,
         r: int = 4,
         lora_alpha: int = 8,
+        patch_level: bool = False,
     ) -> None:
         super().__init__()
         self.mode = mode
+        self.patch_level = patch_level
         # Projection (frozen base 1×1 conv implemented as Linear)
         base_linear = nn.Linear(embed_dim, embed_dim, bias=False)
         nn.init.zeros_(base_linear.weight)  # rely on LoRA delta
         self.proj = LoRALinear(base_linear, r=r, lora_alpha=lora_alpha)
 
+        if patch_level:
+            # Patch embedding conv (same as ViT-L/14) to turn residual map → tokens
+            self.patch_embed = nn.Conv2d(3, embed_dim, kernel_size=14, stride=14, bias=False)
         if mode == "dncnn":
             self.denoiser = _DnCNN()
         elif mode == "noiseprint":
@@ -113,12 +123,15 @@ class FrequencyExpert(nn.Module):
         B, _, H, W = images.shape
         device = images.device
         ll_feat = self._lowlevel_transform(images)  # (B,3,H,W)
-        # Global average pool per channel then flatten concat
+
+        if self.patch_level:
+            tokens = self.patch_embed(ll_feat)  # (B,d,H/14,W/14)
+            tokens = tokens.flatten(2).transpose(1, 2)  # (B, L, d)
+            return tokens  # patch-level tokens
+
+        # ------ vector branch ------
         pooled = F.adaptive_avg_pool2d(ll_feat, 1).view(B, -1)  # (B,3)
-        # Project to embed_dim via LoRA linear (will broadcast)
-        # Need input dim match base_linear.in_features (embed_dim). If 3 != 768, project via simple FC.
         if pooled.size(1) != self.proj.base.in_features:
-            # simple linear pad
             pooled = F.pad(pooled, (0, self.proj.base.in_features - pooled.size(1)))
         out = self.proj(pooled)  # (B, d)
         return out 

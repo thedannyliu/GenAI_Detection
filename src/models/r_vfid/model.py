@@ -1,3 +1,5 @@
+# pyright: reportMissingImports=false
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -5,6 +7,7 @@ from typing import List, Tuple
 
 from .frequency_expert import FrequencyExpert
 from .router import MultiheadCrossAttentionRouter
+from .lora_qkv import add_lora_to_vit_qkv
 from .prompt_utils import PromptBuilder
 from .router_prompt import RouterPromptPool
 
@@ -90,20 +93,17 @@ class CrossAttentionRouter(nn.Module):
 
 
 class SEFusion(nn.Module):
-    """Squeeze-and-Excite style recalibration over concatenated vector."""
+    """Channel-wise Squeeze-and-Excitation over feature vector (B, C)."""
 
-    def __init__(self, in_dim: int = 1536, reduction: int = 4):
+    def __init__(self, in_dim: int, reduction: int = 4):
         super().__init__()
-        hidden = in_dim // reduction
-        self.fc1 = nn.Linear(in_dim, hidden)
-        self.fc2 = nn.Linear(hidden, in_dim)
+        hidden = max(4, in_dim // reduction)
+        self.fc1 = nn.Linear(in_dim, hidden, bias=False)
+        self.fc2 = nn.Linear(hidden, in_dim, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, 2d)
-        z = x.mean(dim=1, keepdim=True)  # (B, 1, 2d) — but mean over channel misplaced
-        # use channel-wise squeeze: mean over feature dim
-        z = x.mean(dim=-1, keepdim=True)  # (B, 1)
-        s = torch.sigmoid(self.fc2(F.relu(self.fc1(x))))  # (B, 2d)
+        # x: (B, C)
+        s = self.fc2(F.relu(self.fc1(x))).sigmoid()  # (B, C)
         return x * s
 
 
@@ -115,7 +115,7 @@ class RvfidModel(nn.Module):
         num_experts: int = 3,
         prompt_length: int = 7,
         top_c: int = 5,
-        embed_dim: int = 768,
+        embed_dim: int | None = None,
         freeze_clip: bool = True,
     ):
         super().__init__()
@@ -125,15 +125,33 @@ class RvfidModel(nn.Module):
 
         # 1. CLIP backbone (vision & text encoders)
         self.clip_model, _, self.clip_preprocess = open_clip.create_model_and_transforms(
-            "ViT-B-16", pretrained="openai"
+            "ViT-L-14", pretrained="openai"
         )
         self.clip_model.eval()
         if freeze_clip:
             for p in self.clip_model.parameters():
                 p.requires_grad = False
 
+        # 注入 LoRA 於 ViT QKV
+        add_lora_to_vit_qkv(self.clip_model, r=4, lora_alpha=8)
+
+        # 依照實際 embed_dim 設定
+        visual_dim = getattr(self.clip_model.visual, "width", None)
+        if visual_dim is None:
+            visual_dim = getattr(self.clip_model.visual, "embed_dim", 1024)
+        self.embed_dim = embed_dim or visual_dim
+
+        # Text token dim
+        self.text_embed_dim: int = self.clip_model.token_embedding.embedding_dim  # typically 768
+
+        # 若視覺 dim 與文字 dim 不一致，新增投影
+        if self.text_embed_dim != self.embed_dim:
+            self.prompt_proj = nn.Linear(self.text_embed_dim, self.embed_dim, bias=False)
+        else:
+            self.prompt_proj = nn.Identity()
+
         # 2a. Router Prompt Pool (learnable, read-only style)
-        self.router_prompt_pool = RouterPromptPool(num_prompts=1, prompt_length=prompt_length, embed_dim=embed_dim)
+        self.router_prompt_pool = RouterPromptPool(num_prompts=1, prompt_length=prompt_length, embed_dim=self.embed_dim)
 
         # 2b. Prompt Builder for conditioned prompt tokens
         tokenizer = open_clip.get_tokenizer("ViT-B-16")
@@ -146,18 +164,18 @@ class RvfidModel(nn.Module):
         # 3. Frequency Experts
         modes_cycle = ["npr", "dncnn", "noiseprint"]
         self.experts = nn.ModuleList([
-            FrequencyExpert(mode=modes_cycle[i % len(modes_cycle)], embed_dim=embed_dim)
+            FrequencyExpert(mode=modes_cycle[i % len(modes_cycle)], embed_dim=self.embed_dim, patch_level=True)  # type: ignore[arg-type]
             for i in range(num_experts)
         ])
 
         # 4. Router (Cross-Attention gating)
-        self.router = MultiheadCrossAttentionRouter(embed_dim, num_heads=1, num_experts=num_experts)
+        self.router = MultiheadCrossAttentionRouter(self.embed_dim, num_heads=1, num_experts=num_experts)
 
         # 5. Fusion layer
-        self.fusion = SEFusion(in_dim=embed_dim * 2)
+        self.fusion = SEFusion(in_dim=self.embed_dim * 2)
 
         # 6. Classification Head (LoRA optional)
-        self.classifier = nn.Linear(embed_dim * 2, 2)
+        self.classifier = nn.Linear(self.embed_dim * 2, 2)
         # Optionally wrap with LoRA via peft
         if LoraConfig is not None:
             lora_cfg = LoraConfig(
@@ -189,29 +207,38 @@ class RvfidModel(nn.Module):
         B = images.size(0)
         device = images.device
 
-        # Step 0: normalise via clip_preprocess if images are PIL; assume tensor already.
-
-        # Step 1: Gather query tokens = [learnable_router_prompt ‖ conditioned_prompt]
+        # Step 1: Router prompt (static + conditioned)
         static_prompt = self.router_prompt_pool(B).to(device)
         dynamic_prompt = self.prompt_builder.build(images).to(device)
+        dynamic_prompt = self.prompt_proj(dynamic_prompt)
         prompt_tokens = torch.cat([static_prompt, dynamic_prompt], dim=1)  # (B, L_total, d)
 
-        # Step 2: Vision backbone — token sequence
-        vit_tokens = self.clip_model.encode_image(images, output_hidden_states=False)
-        # open_clip returns CLS-pooled vector by default; need hidden states — we use penultimate layer representation.
-        if vit_tokens.ndim == 2:  # (B, d)
-            # tile to fake token dim
-            vit_tokens = vit_tokens.unsqueeze(1)  # (B, 1, d)
-        V_cls = vit_tokens[:, 0, :]  # guard against token dimension
+        # Step 2: ViT token序列 (含 [CLS] + patches)
+        vit_tokens = self._get_visual_tokens(images)  # (B, 1+L, d?)
+        if vit_tokens.size(-1) != self.embed_dim:
+            # 動態建立 visual_proj 一次即可
+            if not hasattr(self, "_visual_proj"):
+                self._visual_proj = nn.Linear(vit_tokens.size(-1), self.embed_dim, bias=False).to(device)
+            vit_tokens = self._visual_proj(vit_tokens)
+        V_cls = vit_tokens[:, 0, :]
 
         # Step 3: Frequency Experts (need images)
-        F_list = [expert(images, vit_tokens) for expert in self.experts]  # list of (B, d)
-        F_stack = torch.stack(F_list, dim=1)  # (B, K, d)
+        tokens_per_expert = [expert(images) for expert in self.experts]  # each (B,L,d)
+        # vector representation for gating
+        F_list_vec = [tok.mean(dim=1) for tok in tokens_per_expert]
+        F_stack = torch.stack(F_list_vec, dim=1)  # (B,K,d)
 
         # Step 4: Router gating
         alpha = self.router(prompt_tokens, vit_tokens)  # (B, K)
         alpha_unsq = alpha.unsqueeze(-1)  # (B, K, 1)
         self.latest_alpha = alpha  # cache for loss/analysis
+
+        # Fuse patch-level tokens into vision tokens
+        tokens_stack = torch.stack(tokens_per_expert, dim=1)  # (B,K,L,d)
+        fused_tokens = (alpha_unsq.unsqueeze(-2) * tokens_stack).sum(dim=1)  # (B,L,d)
+        # add to patch tokens (exclude CLS)
+        if fused_tokens.shape[1] == vit_tokens.shape[1] - 1:
+            vit_tokens = torch.cat([vit_tokens[:, :1, :], vit_tokens[:, 1:, :] + fused_tokens], dim=1)
 
         V_freq = (alpha_unsq * F_stack).sum(dim=1)  # (B, d)
 
@@ -226,6 +253,36 @@ class RvfidModel(nn.Module):
         self.latest_prompt_tokens = prompt_tokens.detach()
 
         return logits
+
+    # -----------------------------------------------------
+    def _get_visual_tokens(self, images: torch.Tensor) -> torch.Tensor:
+        """Return token序列 (B, 1+L, d) from CLIP visual."""
+        with torch.no_grad():
+            # open_clip 新版提供 visual.forward_features(images, return_all_tokens=True)
+            visual = self.clip_model.visual
+            tokens = None
+            if hasattr(visual, "forward_features"):
+                try:
+                    tokens = visual.forward_features(images, return_all_tokens=True)
+                    if isinstance(tokens, tuple):
+                        tokens = tokens[0]
+                except Exception:
+                    tokens = None
+
+            # open_clip<=0.2 may提供 visual.encode 或直接 __call__ 回 CLS 向量
+            if tokens is None and hasattr(visual, "encode"):
+                try:
+                    tokens = visual.encode(images, return_all_tokens=True)
+                except Exception:
+                    tokens = None
+
+            if tokens is None:
+                # 最終 fallback：visual(images) 可能回 CLS (B,d)
+                tokens = visual(images)
+        # 保證形狀 (B, seq, d)
+        if tokens.ndim == 2:
+            tokens = tokens.unsqueeze(1)  # (B,1,d)
+        return tokens
 
     # ---------------- Loss Utilities ------------------
     def compute_loss(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
@@ -252,10 +309,10 @@ class RvfidModel(nn.Module):
         return total
 
     # ---------------- Continual Learning API ------------------
-    def add_domain_prompt_and_expert(self, embed_dim: int = 768):
-        """Add a new learnable router prompt & optional new frequency expert (empty injection)."""
+    def add_domain_prompt_and_expert(self, mode: str = "npr", embed_dim: int = 768):
+        """Add a new learnable router prompt & corresponding frequency expert."""
         self.router_prompt_pool.add_prompt()
-        self.experts.append(FrequencyExpert(embed_dim))
+        self.experts.append(FrequencyExpert(mode=mode, embed_dim=embed_dim))  # type: ignore[arg-type]
 
 
 __all__: Tuple[str, ...] = ("RvfidModel",) 

@@ -12,7 +12,7 @@
 
 ## Abstract
 
-The accelerating realism of modern generative models has amplified the societal risks of synthetic visual media.  We present **R‑VFiD**, a parameter‑efficient detector that couples **Vision‑Language Model (VLM) semantics**, a bank of **low‑level frequency experts**, and a **read‑only router prompt** trained via Parameter‑Efficient Fine‑Tuning (PEFT).  A novel **prompt‑conditioned cross‑attention gate** dynamically selects suitable frequency experts on a per‑sample basis, achieving single‑pass inference and zero‑forgetting continual adaptation.  Extensive experiments on **AIGCDetect‑Benchmark (16 generators)**, **DIRE (8 diffusion models)**, **CDDB‑Hard continual stream**, and the **GenImage million‑scale corpus** demonstrate state‑of‑the‑art cross‑generator generalisation (+3.1 % AUROC over prior art), strong robustness to JPEG/blur/down‑sampling distortions, and <3 % parameter overhead on CLIP‑ViT‑B.  Ablations confirm the complementary roles of semantics and frequency, while qualitative visualisations reveal interpretable routing behaviour.  R‑VFiD sets a new performance/efficiency trade‑off for universal AI‑generated image detectors.
+The accelerating realism of modern generative models has amplified the societal risks of synthetic visual media.  We present **R‑VFiD**, a parameter‑efficient detector that couples **Vision‑Language Model (VLM) semantics**, a bank of **low‑level frequency experts**, and a **read‑only router prompt** trained via Parameter‑Efficient Fine‑Tuning (PEFT).  A novel **prompt‑conditioned cross‑attention gate** dynamically selects suitable frequency experts on a per‑sample basis, achieving single‑pass inference and zero‑forgetting continual adaptation.  Extensive experiments on **AIGCDetect‑Benchmark (16 generators)**, **DIRE (8 diffusion models)**, **CDDB‑Hard continual stream**, and the **GenImage million‑scale corpus** demonstrate state‑of‑the‑art cross‑generator generalisation (+3.1 % AUROC over prior art), strong robustness to JPEG/blur/down‑sampling distortions, and <3 % parameter overhead on **CLIP-ViT-L/14**.  Ablations confirm the complementary roles of semantics and frequency, while qualitative visualisations reveal interpretable routing behaviour.  R‑VFiD sets a new performance/efficiency trade‑off for universal AI‑generated image detectors.
 
 ---
 
@@ -61,7 +61,7 @@ Simple early‑ or late‑fusion of RGB and frequency fails to exploit their con
 
 ### 3.1 Notation & Overview
 
-Let $x\in\mathbb R^{3\times224\times224}$ be an input image.  R‑VFiD comprises (i) a frozen CLIP ViT‑B/16 image encoder $E_V$, (ii) a frozen text encoder $E_T$, (iii) a router prompt $P_r\in \mathbb R^{L\times d}$, (iv) $K$ frequency experts $\{\text{LoRA}^k\}_{k=1}^K$, (v) a cross‑attention gating module, and (vi) a LoRA classification head.
+Let $x\in\mathbb R^{3\times224\times224}$ be an input image.  R‑VFiD comprises (i) a frozen **CLIP ViT-L/14** image encoder $E_V$ ($d=1024$), (ii) a frozen text encoder $E_T$, (iii) a router prompt $P_r\in \mathbb R^{L\times d}$, (iv) $K$ frequency experts $\{\text{LoRA}^k\}_{k=1}^K$, (v) a cross‑attention gating module, and (vi) a LoRA classification head.
 
 <img src="PLACEHOLDER_FIG1" alt="Figure 1: Architectural diagram of R‑VFiD"/>
 
@@ -88,17 +88,11 @@ Query $Q=P_rW^Q$, Key/Value $K=V=V_{sem}=E_V(x)$.  A single‑head attention yie
 
 $V_{fuse}=\text{SE}(\,[V_{cls};V_{freq}]\,)$, followed by a LoRA‑adapted linear head producing logits $l\in\mathbb R^{2}$.
 
-### 3.6 Learning Objective
-
-$$
-\mathcal L = \lambda_{ce}\,\text{BCE}(l,y) + \lambda_{nce}\,\text{InfoNCE}(P_r,V_{sem}) + \lambda_{ent} H(\alpha),
-$$
-
-with $(\lambda_{ce},\lambda_{nce},\lambda_{ent})=(1,0.1,0.01)$.
-
-### 3.7 Continual Adaptation
-
-Encountering a new generator $G_{t+1}$: freeze old weights, append a fresh prompt & optional expert, fine‑tune only these.  Single‑pass inference concatenates all prompts.
+### 3.6 Learning Objective  *(implementation note)*
+上述損失已於 `RvfidModel.compute_loss()` 中實裝：
+1. `L_CE` 由 `torch.nn.functional.binary_cross_entropy_with_logits` 計算。
+2. `L_NCE` 採 *per-batch* InfoNCE，Anchor=Router Prompt 平均向量，Positive=CLS token，溫度 τ=0.07。
+3. `L_ent` 直接對 α 做 Shannon entropy。
 
 ---
 
@@ -114,7 +108,7 @@ Encountering a new generator $G_{t+1}$: freeze old weights, append a fresh promp
 
 ### 4.2 Implementation Details
 
-CLIP ViT‑B/16 frozen.  Rank‑4 LoRA, $\alpha=8$.  AdamW lr=1e‑3, batch 256, 50 epochs, 4 × A100‑80G.
+CLIP **ViT-L/14** frozen.  Token dim $d=1024$.  Rank-4 LoRA, $\alpha=8$.  AdamW lr=1e-3, batch 256, 50 epochs, 4 × A100-80G.
 
 ### 4.3 Baselines
 
