@@ -3,9 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Tuple
 
-from .lora import FrequencyExpert
+from .frequency_expert import FrequencyExpert
 from .router import MultiheadCrossAttentionRouter
 from .prompt_utils import PromptBuilder
+from .router_prompt import RouterPromptPool
 
 try:
     import open_clip
@@ -131,7 +132,10 @@ class RvfidModel(nn.Module):
             for p in self.clip_model.parameters():
                 p.requires_grad = False
 
-        # 2. Prompt Builder for conditioned prompt tokens
+        # 2a. Router Prompt Pool (learnable, read-only style)
+        self.router_prompt_pool = RouterPromptPool(num_prompts=1, prompt_length=prompt_length, embed_dim=embed_dim)
+
+        # 2b. Prompt Builder for conditioned prompt tokens
         tokenizer = open_clip.get_tokenizer("ViT-B-16")
         # A minimal ImageNet class name list subset; should load full list in practice
         imagenet_stub = ["dog", "cat", "person", "car", "tree", "building", "sky", "flower"]
@@ -140,8 +144,10 @@ class RvfidModel(nn.Module):
         )
 
         # 3. Frequency Experts
+        modes_cycle = ["npr", "dncnn", "noiseprint"]
         self.experts = nn.ModuleList([
-            FrequencyExpert(embed_dim) for _ in range(num_experts)
+            FrequencyExpert(mode=modes_cycle[i % len(modes_cycle)], embed_dim=embed_dim)
+            for i in range(num_experts)
         ])
 
         # 4. Router (Cross-Attention gating)
@@ -185,8 +191,10 @@ class RvfidModel(nn.Module):
 
         # Step 0: normalise via clip_preprocess if images are PIL; assume tensor already.
 
-        # Step 1: Generate conditioned Router Prompt embeddings
-        prompt_tokens = self.prompt_builder.build(images).to(device)  # (B, L', d)
+        # Step 1: Gather query tokens = [learnable_router_prompt ‖ conditioned_prompt]
+        static_prompt = self.router_prompt_pool(B).to(device)
+        dynamic_prompt = self.prompt_builder.build(images).to(device)
+        prompt_tokens = torch.cat([static_prompt, dynamic_prompt], dim=1)  # (B, L_total, d)
 
         # Step 2: Vision backbone — token sequence
         vit_tokens = self.clip_model.encode_image(images, output_hidden_states=False)
@@ -196,13 +204,14 @@ class RvfidModel(nn.Module):
             vit_tokens = vit_tokens.unsqueeze(1)  # (B, 1, d)
         V_cls = vit_tokens[:, 0, :]  # guard against token dimension
 
-        # Step 3: Frequency Experts
-        F_list = [expert(vit_tokens) for expert in self.experts]  # list of (B, d)
+        # Step 3: Frequency Experts (need images)
+        F_list = [expert(images, vit_tokens) for expert in self.experts]  # list of (B, d)
         F_stack = torch.stack(F_list, dim=1)  # (B, K, d)
 
         # Step 4: Router gating
         alpha = self.router(prompt_tokens, vit_tokens)  # (B, K)
         alpha_unsq = alpha.unsqueeze(-1)  # (B, K, 1)
+        self.latest_alpha = alpha  # cache for loss/analysis
 
         V_freq = (alpha_unsq * F_stack).sum(dim=1)  # (B, d)
 
@@ -212,7 +221,41 @@ class RvfidModel(nn.Module):
 
         # Step 6: Head
         logits = self.classifier(V_fuse)  # (B, 2)
+        # Store V_cls for InfoNCE
+        self.latest_vcls = V_cls.detach()
+        self.latest_prompt_tokens = prompt_tokens.detach()
+
         return logits
+
+    # ---------------- Loss Utilities ------------------
+    def compute_loss(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        """Compute BCE + InfoNCE + Entropy losses per §3.6."""
+        bce = nn.functional.binary_cross_entropy_with_logits(logits[:, 1], labels.float())
+
+        # ---- InfoNCE ----
+        # Anchor: per-sample mean router prompt (static part)   (B,d)
+        B = labels.size(0)
+        prompt_tokens = self.latest_prompt_tokens[:, : self.router_prompt_pool.prompt_tokens.numel() // self.router_prompt_pool.prompt_tokens.size(-1), :]  # static chunk length Ls
+        anchor = prompt_tokens.view(B, -1, prompt_tokens.size(-1)).mean(dim=1)  # (B,d)
+
+        v_sem = self.latest_vcls  # (B,d)
+        positives = torch.cat([v_sem], dim=0)  # (B,d)
+        logits_sim = (anchor @ positives.T) / 0.07  # (B,B)
+        labels_nce = torch.arange(B, device=logits.device)
+        info_nce = nn.functional.cross_entropy(logits_sim, labels_nce)
+
+        # ---- Entropy ----
+        alpha = self.latest_alpha  # (B, K)
+        entropy = (-alpha * (alpha + 1e-8).log()).sum(dim=-1).mean()
+
+        total = bce + 0.1 * info_nce + 0.01 * entropy
+        return total
+
+    # ---------------- Continual Learning API ------------------
+    def add_domain_prompt_and_expert(self, embed_dim: int = 768):
+        """Add a new learnable router prompt & optional new frequency expert (empty injection)."""
+        self.router_prompt_pool.add_prompt()
+        self.experts.append(FrequencyExpert(embed_dim))
 
 
 __all__: Tuple[str, ...] = ("RvfidModel",) 

@@ -332,6 +332,8 @@ Key points:
 * Lightweight Squeeze-and-Excite fusion combines high-level semantics (CLS token) with the α-weighted frequency vector, followed by a LoRA-adapted binary head.
 * **LoRA Frequency Experts** now implemented via lightweight `LoRALinear` (rank 4).  Each expert learns only ~24 k parameters.
 * Router upgraded to `MultiheadCrossAttentionRouter` (PyTorch MHA), providing ⍺-weights in a single pass.
+* `RouterPromptPool` provides **read-only learnable tokens**; `add_domain_prompt_and_expert()` enables continual expansion without touching past prompts.
+* Built-in `compute_loss()` implements BCE + Entropy (+ placeholder InfoNCE) for quick training prototype.
 
 Usage example:
 
