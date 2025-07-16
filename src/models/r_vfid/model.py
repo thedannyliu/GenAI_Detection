@@ -7,7 +7,7 @@ from typing import List, Tuple
 
 from .frequency_expert import FrequencyExpert
 from .router import MultiheadCrossAttentionRouter
-from .lora_qkv import add_lora_to_vit_qkv
+from .multi_lora import add_multi_lora_to_vit_qkv
 from .prompt_utils import PromptBuilder
 from .router_prompt import RouterPromptPool
 
@@ -133,7 +133,7 @@ class RvfidModel(nn.Module):
                 p.requires_grad = False
 
         # 注入 LoRA 於 ViT QKV
-        add_lora_to_vit_qkv(self.clip_model, r=4, lora_alpha=8)
+        add_multi_lora_to_vit_qkv(self.clip_model, num_experts=num_experts, r=4, lora_alpha=8)
 
         # 依照實際 embed_dim 設定
         visual_dim = getattr(self.clip_model.visual, "width", None)
@@ -213,37 +213,54 @@ class RvfidModel(nn.Module):
         dynamic_prompt = self.prompt_proj(dynamic_prompt)
         prompt_tokens = torch.cat([static_prompt, dynamic_prompt], dim=1)  # (B, L_total, d)
 
-        # Step 2: ViT token序列 (含 [CLS] + patches)
-        vit_tokens = self._get_visual_tokens(images)  # (B, 1+L, d?)
-        if vit_tokens.size(-1) != self.embed_dim:
-            # 動態建立 visual_proj 一次即可
-            if not hasattr(self, "_visual_proj"):
-                self._visual_proj = nn.Linear(vit_tokens.size(-1), self.embed_dim, bias=False).to(device)
-            vit_tokens = self._visual_proj(vit_tokens)
-        V_cls = vit_tokens[:, 0, :]
+        # --------------------
+        # Semantic tokens per expert
+        # --------------------
 
-        # Step 3: Frequency Experts (need images)
-        tokens_per_expert = [expert(images) for expert in self.experts]  # each (B,L,d)
-        # vector representation for gating
+        tokens_per_expert = [expert(images) for expert in self.experts]  # (B,L,d) ×K
         F_list_vec = [tok.mean(dim=1) for tok in tokens_per_expert]
         F_stack = torch.stack(F_list_vec, dim=1)  # (B,K,d)
 
-        # Step 4: Router gating
-        alpha = self.router(prompt_tokens, vit_tokens)  # (B, K)
-        alpha_unsq = alpha.unsqueeze(-1)  # (B, K, 1)
-        self.latest_alpha = alpha  # cache for loss/analysis
+        # 先用 expert-0 取語意 tokens 給 Router
+        self.clip_model.visual.set_expert(0)
+        vit_tokens0 = self._get_visual_tokens(images)
+        if vit_tokens0.size(-1) != self.embed_dim:
+            if not hasattr(self, "_visual_proj"):
+                self._visual_proj = nn.Linear(vit_tokens0.size(-1), self.embed_dim, bias=False).to(device)
+            vit_tokens0 = self._visual_proj(vit_tokens0)
 
-        # Fuse patch-level tokens into vision tokens
-        tokens_stack = torch.stack(tokens_per_expert, dim=1)  # (B,K,L,d)
-        fused_tokens = (alpha_unsq.unsqueeze(-2) * tokens_stack).sum(dim=1)  # (B,L,d)
-        # add to patch tokens (exclude CLS)
-        if fused_tokens.shape[1] == vit_tokens.shape[1] - 1:
-            vit_tokens = torch.cat([vit_tokens[:, :1, :], vit_tokens[:, 1:, :] + fused_tokens], dim=1)
+        # Router α
+        alpha = self.router(prompt_tokens, vit_tokens0)  # (B,K)
+        self.latest_alpha = alpha
 
-        V_freq = (alpha_unsq * F_stack).sum(dim=1)  # (B, d)
+        # ------------------------------------------
+        # 迴圈各 expert → CLS token
+        # ------------------------------------------
+        V_cls_list = []
+        tokens_stack = []
+        for k in range(self.num_experts):
+            self.clip_model.visual.set_expert(k)
+            vit_tok_k = self._get_visual_tokens(images)
+            if vit_tok_k.size(-1) != self.embed_dim:
+                vit_tok_k = self._visual_proj(vit_tok_k)
+
+            # fuse patch tokens from freq expert k
+            patch_tok = tokens_per_expert[k]
+            if patch_tok.shape[1] == vit_tok_k.shape[1] - 1:
+                vit_tok_k = torch.cat([vit_tok_k[:, :1, :], vit_tok_k[:, 1:, :] + patch_tok], dim=1)
+
+            V_cls_list.append(vit_tok_k[:, 0, :])
+            tokens_stack.append(patch_tok)
+
+        V_cls_stack = torch.stack(V_cls_list, dim=1)  # (B,K,d)
+        alpha_unsq = alpha.unsqueeze(-1)
+        V_cls = (alpha_unsq * V_cls_stack).sum(dim=1)  # (B,d)
+
+        # Low-level fused vector
+        V_freq = (alpha_unsq * F_stack).sum(dim=1)
 
         # Step 5: Fusion
-        V_cat = torch.cat([V_cls, V_freq], dim=-1)  # (B, 2d)
+        V_cat = torch.cat([V_cls, V_freq], dim=-1)
         V_fuse = self.fusion(V_cat)
 
         # Step 6: Head
