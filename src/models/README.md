@@ -320,3 +320,39 @@ class CustomVLMModelWrapper(BaseVLM):
 - Most VLMs require a GPU with at least 8GB VRAM
 - For larger models (e.g., CLIP-L/14), 16GB or more is recommended
 - Use mixed precision training (`torch.cuda.amp`) for memory efficiency 
+
+## R-VFiD (Semantic–Frequency–Prompt Detector)
+
+The `src.models.r_vfid` sub-module contains an initial, **parameter-efficient** implementation of the R-VFiD architecture described in `src/models/R-VFiD/R-VFiD.md`.
+
+Key points:
+
+* Frozen CLIP ViT-B/16 vision backbone and text encoder.
+* Read-only *Router Prompt* tokens drive a cross-attention router that produces per-image weights α over multiple **frequency experts** (LoRA adapters).
+* Lightweight Squeeze-and-Excite fusion combines high-level semantics (CLS token) with the α-weighted frequency vector, followed by a LoRA-adapted binary head.
+* **LoRA Frequency Experts** now implemented via lightweight `LoRALinear` (rank 4).  Each expert learns only ~24 k parameters.
+* Router upgraded to `MultiheadCrossAttentionRouter` (PyTorch MHA), providing ⍺-weights in a single pass.
+* `RouterPromptPool` provides **read-only learnable tokens**; `add_domain_prompt_and_expert()` enables continual expansion without touching past prompts.
+* Built-in `compute_loss()` implements BCE + Entropy (+ placeholder InfoNCE) for quick training prototype.
+* **InfoNCE + Entropy loss** implemented via `RvfidModel.compute_loss()`; CLS token 對比 Router Prompt，並含 α 熵正則。
+* Three *true* frequency experts (`npr`, `dncnn`, `noiseprint`) with low-level filters and LoRA projection (rank-4) are registered in `frequency_expert.py`.
+* `add_domain_prompt_and_expert(mode=...)` 可在訓練中即時擴充新 prompt + expert 並自動凍結舊權重。
+
+Usage example:
+
+```python
+import torch
+from src.models.r_vfid import RvfidModel
+
+# dummy batch of normalised images (B,3,224,224)
+images = torch.randn(8, 3, 224, 224)
+
+model = RvfidModel(num_experts=3)
+logits = model(images)  # shape: (8, 2)
+probs  = logits.softmax(dim=-1)[:, 1]  # P(fake)
+print(probs)
+```
+
+The current implementation uses *stub* frequency experts.  To plug in real LoRA-based experts, extend `SimpleFrequencyExpert` or replace it with a PEFT-injected ViT block wrapper. 
+
+* Basic shape integrity tests live in `tests/test_r_vfid.py` (pytest).  Run `pytest -q` after installing dev dependencies.

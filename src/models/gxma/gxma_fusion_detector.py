@@ -98,6 +98,87 @@ class ParallelCrossAttentionFusion(nn.Module):
         return fused
 
 
+# =========================== Strategy C: Parallel Streams + Meta-Gate ===========================
+
+
+class HierarchicalGatedParallelFusion(nn.Module):
+    """Parallel attention streams with a semantic-conditioned *Meta-Gate*.
+
+    This extends ``ParallelCrossAttentionFusion`` by learning *softmax weights* (g1 … gN)
+    conditioned on the **semantic feature**.  The weights modulate the contribution of
+    each frequency expert enabling *context-aware* evidence aggregation as described in
+    the GXMA proposal (Strategy C / Tier-2.5).
+    """
+
+    def __init__(
+        self,
+        freq_dims: dict,
+        sem_dim: int,
+        hidden_dim: int = 256,
+        num_heads: int = 4,
+        gate_hidden_dim: int = 128,
+    ) -> None:
+        super().__init__()
+
+        # ---------- Parallel attention experts (one per frequency feature) ----------
+        self.query_proj = nn.Linear(sem_dim, hidden_dim)
+        self.key_projs = nn.ModuleDict()
+        self.value_projs = nn.ModuleDict()
+        self.attn_modules = nn.ModuleDict()
+
+        for method, dim in freq_dims.items():
+            self.key_projs[method] = nn.Linear(dim, hidden_dim)
+            self.value_projs[method] = nn.Linear(dim, hidden_dim)
+            self.attn_modules[method] = nn.MultiheadAttention(
+                embed_dim=hidden_dim, num_heads=num_heads, batch_first=True
+            )
+
+        self.methods = list(freq_dims.keys())
+
+        # ---------- Meta-Gate ----------
+        self.gate_network = nn.Sequential(
+            nn.Linear(sem_dim, gate_hidden_dim),
+            nn.ReLU(),
+            nn.Linear(gate_hidden_dim, len(self.methods)),
+        )
+
+    def forward(self, freq_feat_dict: dict, sem_feat: torch.Tensor) -> torch.Tensor:
+        """Forward pass.
+
+        Args
+        ----
+        freq_feat_dict: mapping method → Tensor of shape (B, dim_i).
+        sem_feat: semantic feature tensor of shape (B, sem_dim).
+        Returns
+        -------
+        fused: Tensor of shape (B, hidden_dim) – weighted sum of expert outputs.
+        """
+
+        # 1. Shared Query projection
+        q = self.query_proj(sem_feat).unsqueeze(1)  # (B, 1, H)
+
+        # 2. Run each expert attention
+        expert_outputs = []  # List[(B, 1, H)]
+        for method in self.methods:
+            feat = freq_feat_dict[method]
+            k = self.key_projs[method](feat).unsqueeze(1)
+            v = self.value_projs[method](feat).unsqueeze(1)
+            out, _ = self.attn_modules[method](q, k, v)
+            expert_outputs.append(out)  # (B, 1, H)
+
+        # Stack -> (B, N, H)
+        experts = torch.cat(expert_outputs, dim=1)  # (B, N_methods, H)
+
+        # 3. Meta-Gate: produce softmax weights (B, N_methods)
+        gate_logits = self.gate_network(sem_feat)  # (B, N_methods)
+        gate_weights = torch.softmax(gate_logits, dim=-1).unsqueeze(-1)  # (B, N_methods, 1)
+
+        # 4. Weighted aggregation
+        fused = torch.sum(experts * gate_weights, dim=1)  # (B, H)
+
+        return fused
+
+
 class GXMAFusionDetector(nn.Module):
     """PoC detector combining frequency fingerprints and CLIP semantics."""
 
@@ -126,6 +207,10 @@ class GXMAFusionDetector(nn.Module):
             freq_dims = {m: self.freq_extractor.METHOD_DIM[m] for m in self.freq_extractor.methods}
             self.fusion = ParallelCrossAttentionFusion(freq_dims, sem_dim, hidden_dim, num_heads, aggregate="sum")
             fusion_output_dim = hidden_dim  # 'sum' aggregation keeps dim size
+        elif self.fusion_strategy in {"gated", "hierarchical", "hierarchical_gating"}:
+            freq_dims = {m: self.freq_extractor.METHOD_DIM[m] for m in self.freq_extractor.methods}
+            self.fusion = HierarchicalGatedParallelFusion(freq_dims, sem_dim, hidden_dim, num_heads)
+            fusion_output_dim = hidden_dim
         else:
             raise ValueError(f"Unsupported fusion_strategy: {self.fusion_strategy}")
 
@@ -136,21 +221,35 @@ class GXMAFusionDetector(nn.Module):
             nn.Linear(128, num_classes),
         )
 
-    def forward(self, images: torch.Tensor) -> torch.Tensor:
-        # 'images' is a batch of tensors on the target device (e.g., cuda:1)
+    def forward(self, images: torch.Tensor, freq_feat_full: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Forward pass.
+
+        Args:
+            images: batch of image tensors (C,H,W) on device.
+            freq_feat_full: optional pre-computed frequency feature tensor of shape (B, D_total).
+        """
+        # Semantic feature on device
         sem_feat = self.sem_extractor(images)
 
-        # Extract frequency features (on CPU to save GPU memory)
-        freq_feats = [self.freq_extractor(img.cpu()) for img in images]  # list of (D_total,) tensors
-        freq_feat_full = torch.stack(freq_feats, dim=0)  # (B, D_total)
+        # If frequency features not supplied, compute on-the-fly (original fallback)
+        if freq_feat_full is None:
+            freq_feats = [self.freq_extractor(img.cpu()) for img in images]
+            freq_feat_full = torch.stack(freq_feats, dim=0)
 
         target_device = next(self.parameters()).device
         freq_feat_full = freq_feat_full.to(target_device)
 
         if self.fusion_strategy == "single":
             fused = self.fusion(freq_feat_full, sem_feat)
-        else:  # parallel
-            # Split concatenated frequency vector into per-method tensors
+        elif self.fusion_strategy in {"parallel"}:  # simple parallel sum/concat
+            freq_dict = {}
+            start = 0
+            for method in self.freq_extractor.methods:
+                dim = self.freq_extractor.METHOD_DIM[method]
+                freq_dict[method] = freq_feat_full[:, start : start + dim]
+                start += dim
+            fused = self.fusion(freq_dict, sem_feat)
+        else:  # hierarchical / gated
             freq_dict = {}
             start = 0
             for method in self.freq_extractor.methods:

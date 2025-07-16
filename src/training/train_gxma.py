@@ -6,7 +6,7 @@ import argparse
 import json
 import random
 from pathlib import Path
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
 
 import numpy as np
 import torch
@@ -69,19 +69,26 @@ def train_one_epoch(
     all_preds: List[int] = []
     all_labels: List[int] = []
 
-    for batch_idx, (images, labels) in enumerate(tqdm(loader, desc=f"Train Epoch {epoch}", leave=False)):
+    for batch_idx, batch in enumerate(tqdm(loader, desc=f"Train Epoch {epoch}", leave=False)):
+        if len(batch) == 3:
+            images, freq_feats, labels = batch
+        else:
+            images, labels = batch  # type: ignore
+            freq_feats = None
         if current_step >= max_steps:
             break
 
-        # Assuming `images` is a list of Tensors, stack them and move to device
+        # Move to device
         if isinstance(images, list):
             images = torch.stack(images).to(device)
         else:
             images = images.to(device)
+        if freq_feats is not None:
+            freq_feats = freq_feats.to(device)
 
         labels = labels.to(device)
         optimizer.zero_grad()
-        outputs = model(images)
+        outputs = model(images, freq_feats) if freq_feats is not None else model(images)
         loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
@@ -112,14 +119,21 @@ def evaluate(
     all_probs: List[float] = []  # For AUC
 
     with torch.no_grad():
-        for images, labels in tqdm(loader, desc=f"Eval {epoch}", leave=False):
+        for batch in tqdm(loader, desc=f"Eval {epoch}", leave=False):
+            if len(batch) == 3:
+                images, freq_feats, labels = batch
+            else:
+                images, labels = batch  # type: ignore
+                freq_feats = None
             # Assuming `images` is a list of Tensors, stack them and move to device
             if isinstance(images, list):
                 images = torch.stack(images).to(device)
             else:
                 images = images.to(device)
+            if freq_feats is not None:
+                freq_feats = freq_feats.to(device)
             labels = labels.to(device)
-            outputs = model(images)
+            outputs = model(images, freq_feats) if freq_feats is not None else model(images)
             loss = criterion(outputs, labels)
             total_loss += loss.item()
             preds = outputs.argmax(dim=1)
@@ -139,8 +153,55 @@ def evaluate(
     return avg_loss, acc, auc, f1, torch.tensor(all_preds), torch.tensor(all_labels)
 
 
-def main(config_path: str, mode: str) -> None:
-    with open(config_path, "r") as f:
+# === Utility: checkpoint I/O ===
+
+def _save_checkpoint(
+    *,
+    epoch: int,
+    model: nn.Module,
+    optimizer: optim.Optimizer,
+    scheduler: optim.lr_scheduler._LRScheduler,
+    best_metric: float,
+    current_step: int,
+    epochs_no_improve: int,
+    filename: Path,
+) -> None:
+    """Persist full training state (model + optimizer + scheduler)."""
+    ckpt = {
+        "epoch": epoch,
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict(),
+        "best_metric": best_metric,
+        "current_step": current_step,
+        "epochs_no_improve": epochs_no_improve,
+    }
+    filename.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(ckpt, filename)
+
+
+def main(config_path: Optional[str], mode: str, resume_path: Optional[str] = None) -> None:
+    # ---------------------------------------------------------------
+    # 0. Resolve which config YAML to load
+    #    • If --resume is passed and <run_dir>/config_used.yaml exists, use it
+    #    • Otherwise fall back to --config provided via CLI
+    # ---------------------------------------------------------------
+    cfg_path_final: Optional[Path] = Path(config_path) if config_path else None
+    if resume_path:
+        resume_file = Path(resume_path)
+        candidate_cfg = resume_file.parent / "config_used.yaml"
+        if candidate_cfg.exists():
+            print(f"[Config] Using config file from previous run: {candidate_cfg}")
+            cfg_path_final = candidate_cfg
+        elif cfg_path_final is None:
+            raise FileNotFoundError(
+                "--resume specified but config_used.yaml not found, and --config not provided."
+            )
+
+    if cfg_path_final is None or not cfg_path_final.exists():
+        raise FileNotFoundError(f"Config file not found: {cfg_path_final}")
+
+    with open(cfg_path_final, "r") as f:
         cfg = yaml.safe_load(f)
 
     general = cfg.get("general", {})
@@ -165,7 +226,7 @@ def main(config_path: str, mode: str) -> None:
 
     # Save a copy of the config YAML for reproducibility
     try:
-        shutil.copy(config_path, output_dir / "config_used.yaml")
+        shutil.copy(cfg_path_final, output_dir / "config_used.yaml")
     except Exception as e_copy:
         print(f"Warning: Failed to copy config file to output dir: {e_copy}")
 
@@ -188,6 +249,9 @@ def main(config_path: str, mode: str) -> None:
     num_val = data_cfg.get("val_samples_per_class")
     num_test = data_cfg.get("test_samples_per_class")
 
+    use_freq = mode != "semantic"  # Semantic-only path does not need frequency vectors
+
+    # Prepare datasets (frequency features only if needed)
     train_dataset = GenImageDataset(
         dataset_root,
         split=train_split_name,
@@ -195,6 +259,8 @@ def main(config_path: str, mode: str) -> None:
         class_to_idx=class_map,
         num_samples_per_class=num_train,
         seed=seed,
+        include_freq_features=use_freq,
+        freq_methods=freq_methods if use_freq else None,
     )
     val_dataset = GenImageDataset(
         dataset_root,
@@ -203,6 +269,8 @@ def main(config_path: str, mode: str) -> None:
         class_to_idx=class_map,
         num_samples_per_class=num_val,
         seed=seed + 1,
+        include_freq_features=use_freq,
+        freq_methods=freq_methods if use_freq else None,
     )
     test_dataset = GenImageDataset(
         dataset_root,
@@ -211,10 +279,20 @@ def main(config_path: str, mode: str) -> None:
         class_to_idx=class_map,
         num_samples_per_class=num_test,
         seed=seed + 2,
+        include_freq_features=use_freq,
+        freq_methods=freq_methods if use_freq else None,
     )
 
     batch_size = data_cfg.get("batch_size", 8)
-    num_workers = data_cfg.get("num_workers", 4)
+    num_workers = data_cfg.get("num_workers", 8)  # Increased workers
+
+    def collate_with_freq(batch):
+        # Each item: (image, freq_feat, label)
+        images, freqs, labels = zip(*batch)
+        images = torch.stack(images)
+        freqs = torch.stack(freqs)
+        labels = torch.tensor(labels, dtype=torch.long)
+        return images, freqs, labels
 
     # Dataset statistics
     print("Loaded datasets:")
@@ -222,26 +300,36 @@ def main(config_path: str, mode: str) -> None:
     print(f"  Val   set: {len(val_dataset)} images | batches: {len(val_dataset)//batch_size}")
     print(f"  Test  set: {len(test_dataset)} images | batches: {len(test_dataset)//batch_size}")
 
+    collate_fn_train = collate_with_freq if use_freq else vlm_collate_fn
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
-        collate_fn=vlm_collate_fn,
+        collate_fn=collate_fn_train,
+        pin_memory=True,
+        persistent_workers=True,
     )
+    collate_fn_eval = collate_with_freq if use_freq else vlm_collate_fn
+
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        collate_fn=vlm_collate_fn,
+        collate_fn=collate_fn_eval,
+        pin_memory=True,
+        persistent_workers=True,
     )
     test_loader = DataLoader(
         test_dataset,
         batch_size=eval_cfg.get("batch_size", batch_size),
         shuffle=False,
         num_workers=num_workers,
-        collate_fn=vlm_collate_fn,
+        collate_fn=collate_fn_eval,
+        pin_memory=True,
+        persistent_workers=True,
     )
 
     if mode == "fusion":
@@ -309,10 +397,63 @@ def main(config_path: str, mode: str) -> None:
         "lr": [],
     }
 
+    # If resuming, try to load previous history from training_results.json
+    json_prev = None
+    if resume_path:
+        json_candidate = (Path(resume_path).parent / "training_results.json")
+        if json_candidate.exists():
+            try:
+                with open(json_candidate, "r") as f_prev:
+                    prev_data = json.load(f_prev)
+                    prev_hist = prev_data.get("history", {})
+                    # Merge metric lists if lengths match epoch numbers before resume
+                    for k in history.keys():
+                        if k in prev_hist and isinstance(prev_hist[k], list):
+                            history[k] = prev_hist[k].copy()
+                print(f"[Resume] Loaded previous history with {len(history['train_loss'])} epochs.")
+            except Exception as e_hist:
+                print(f"Warning: could not load previous history: {e_hist}")
+
     current_step = 0
     training_start_time = time.time()
     writer = SummaryWriter(log_dir=str(output_dir / "tensorboard"))
-    for epoch in range(1, num_epochs + 1):
+
+    # ---------------- Resume from checkpoint (if provided) ----------------
+    start_epoch: int = 1  # default begin at epoch 1
+    epochs_no_improve = 0  # will be updated if resume
+    current_step = 0  # for schedulers using total steps
+
+    if resume_path:
+        resume_file = Path(resume_path)
+        if resume_file.exists():
+            print(f"[Resume] Loading checkpoint from {resume_file} ...")
+            # NOTE: Starting from PyTorch 2.6 the default value for `weights_only` in
+            # `torch.load` changed from False → True which can break loading older
+            # checkpoints that store more than just tensor weights (e.g. optimizer
+            # state, numpy scalars, custom metadata).  Explicitly set
+            # `weights_only=False` to ensure full pickle loading.  Fall back to the
+            # older signature for compatibility with <2.6 installations where the
+            # argument is not recognised.
+            try:
+                ckpt = torch.load(resume_file, map_location=device, weights_only=False)
+            except TypeError:
+                # running on a PyTorch version < 2.6 where `weights_only` is not a valid kwarg
+                ckpt = torch.load(resume_file, map_location=device)
+            model.load_state_dict(ckpt["model"])
+            optimizer.load_state_dict(ckpt["optimizer"])
+            try:
+                scheduler.load_state_dict(ckpt["scheduler"])
+            except Exception as e_sched:
+                print(f"Warning: failed to load scheduler state: {e_sched}")
+            start_epoch = int(ckpt.get("epoch", 0)) + 1
+            best_metric = float(ckpt.get("best_metric", best_metric))
+            current_step = int(ckpt.get("current_step", 0))
+            epochs_no_improve = int(ckpt.get("epochs_no_improve", 0))
+            print(f"[Resume] Resuming from epoch {start_epoch} with best_metric={best_metric:.4f}")
+        else:
+            print(f"[Resume] Checkpoint {resume_file} not found. Starting from scratch.")
+
+    for epoch in range(start_epoch, num_epochs + 1):
         print(f"\n========== Epoch {epoch}/{num_epochs} ==========")
         epoch_start_time = time.time()
         print("[Stage] Training loop -> Epoch", epoch)
@@ -375,11 +516,23 @@ def main(config_path: str, mode: str) -> None:
         if improvement > es_threshold:
             best_metric = metric_to_check
             epochs_no_improve = 0
-            checkpoint_path = output_dir / "best_model.pth"
-            torch.save(model.state_dict(), checkpoint_path)
-            print(f"Validation metric improved to {best_metric:.4f}. Saving model.")
+            checkpoint_path_best = output_dir / "best_model.pth"
+            torch.save(model.state_dict(), checkpoint_path_best)
+            print(f"Validation metric improved to {best_metric:.4f}. Saving BEST model.")
         else:
             epochs_no_improve += 1
+
+        # ---- Save last checkpoint every epoch ----
+        _save_checkpoint(
+            epoch=epoch,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            best_metric=best_metric,
+            current_step=current_step,
+            epochs_no_improve=epochs_no_improve,
+            filename=output_dir / "last.pth",
+        )
 
         if epochs_no_improve >= es_patience:
             print(f"Early stopping triggered after {es_patience} epochs with no improvement.")
@@ -440,13 +593,20 @@ def main(config_path: str, mode: str) -> None:
             class_to_idx=class_map_extra,
             num_samples_per_class=num_samples_extra,
             seed=seed + 3,
+            include_freq_features=use_freq,
+            freq_methods=freq_methods if use_freq else None,
         )
+
+        collate_fn_extra = collate_with_freq if use_freq else vlm_collate_fn
+
         extra_loader = DataLoader(
             extra_dataset,
             batch_size=eval_cfg.get("batch_size", batch_size),
             shuffle=False,
             num_workers=num_workers,
-            collate_fn=vlm_collate_fn,
+            collate_fn=collate_fn_extra,
+            pin_memory=True,
+            persistent_workers=True,
         )
         print(f"[Stage] Extra Test evaluation on {ds_name} | images: {len(extra_dataset)}")
         extra_loss, extra_acc, extra_auc, extra_f1, extra_preds_tensor, extra_labels_tensor = evaluate(
@@ -473,7 +633,7 @@ def main(config_path: str, mode: str) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train GXMA Fusion Detector")
-    parser.add_argument("--config", type=str, required=True, help="Path to YAML config")
+    parser.add_argument("--config", type=str, required=False, help="Path to YAML config (optional if --resume is used)")
     parser.add_argument(
         "--mode",
         type=str,
@@ -481,5 +641,11 @@ if __name__ == "__main__":
         choices=["fusion", "frequency", "semantic"],
         help="Which model variant to train (fusion | frequency | semantic)",
     )
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Path to checkpoint (.pth) to resume training from",
+    )
     args = parser.parse_args()
-    main(args.config, args.mode)
+    main(args.config, args.mode, args.resume)
