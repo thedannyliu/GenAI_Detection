@@ -125,12 +125,4 @@ def add_multi_lora_to_vit_qkv(
 
     visual.set_expert = types.MethodType(_set_expert, visual)  # type: ignore[attr-defined]
 
-    # safety: ensure at least one MultiLoRALinear injected (for tests)
-    has_mll = any(isinstance(m, MultiLoRALinear) for m in visual.modules())
-    if not has_mll:
-        # 找第一個 nn.Linear 當示範包裝
-        for m in visual.modules():
-            if isinstance(m, nn.Linear):
-                parent = m.__dict__.get("_parent", None)
-                # cannot easily access parent; fallback跳過
-                break 
+    # 至此至少應有一個 MultiLoRALinear，如無則表 internal 結構變動 

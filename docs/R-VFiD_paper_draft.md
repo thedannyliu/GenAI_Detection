@@ -73,12 +73,11 @@ Let $x\in\mathbb R^{3\times224\times224}$ be an input image.  R‑VFiD comprises
 
 ### 3.3 Low‑Level Information Extraction
 
-We adopt three proven representations:
+For each low-level representation $k\in\{1,\dots,K\}$ — **NPR**, **DnCNN** and **NoisePrint** in our instantiation — we create a *patch-level token stream* $F_k\in\mathbb R^{L\times d}$ by applying the same $\texttt{Conv}_{14\times14}$ patch embed as ViT-L/14 to the residual map.  **Each stream owns an independent rank-4 LoRA expert injected into every QKV matrix** of the frozen ViT backbone:
 
-* **NPR**: Upsampling residuals (N=3).
-* **DnCNN Residual Noise**: Gaussian‑denoised artefacts.
-* **NoisePrint**: Camera‑model fingerprint residuals.
-  Each channel is processed by a dedicated LoRA injection into QKV: $W_{qkv}\leftarrow W_{qkv}+\alpha/r\,B_kA_k$.
+$$\widetilde W_{qkv}^{(k)} = W_{qkv} + \tfrac{\alpha}{r}B_kA_k.$$
+
+At runtime we iterate over experts, switching the active LoRA via \texttt{visual.set\_expert(k)}.  The router weights $\alpha\in\Delta^K$ are then used to linearly combine the $K$ CLS tokens into a single semantic vector.
 
 ### 3.4 Prompt‑Conditioned Gating
 
@@ -108,7 +107,7 @@ $V_{fuse}=\text{SE}(\,[V_{cls};V_{freq}]\,)$, followed by a LoRA‑adapted linea
 
 ### 4.2 Implementation Details
 
-CLIP **ViT-L/14** frozen.  Token dim $d=1024$.  Rank-4 LoRA, $\alpha=8$.  AdamW lr=1e-3, batch 256, 50 epochs, 4 × A100-80G.
+CLIP **ViT-L/14** frozen ($d=1024$, 24 layers).  **Multi-LoRA**: one rank-4 expert per low-level stream, injected into all QKV matrices.  Total extra parameters $3\times (r\cdot d\cdot3) \approx 0.3$ M.  AdamW lr=1e-3, batch 256, 50 epochs on 4 × A100-80G.
 
 ### 4.3 Baselines
 
