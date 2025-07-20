@@ -1,3 +1,4 @@
+# pyright: reportMissingImports=false
 from typing import Tuple
 
 import torch
@@ -15,6 +16,25 @@ class MultiheadCrossAttentionRouter(nn.Module):
         super().__init__()
         self.attn = nn.MultiheadAttention(embed_dim, num_heads=num_heads, batch_first=True)
         self.fc = nn.Linear(embed_dim, num_experts)
+        self.num_experts = num_experts
+
+    # --------------------------------------------------
+    def add_expert(self, num_new: int = 1) -> None:
+        """Expand output dimension to accommodate additional expert(s)."""
+        if num_new <= 0:
+            return
+        old_weight = self.fc.weight.data
+        old_bias = self.fc.bias.data
+        out_dim, in_dim = old_weight.shape
+        new_out_dim = out_dim + num_new
+        new_fc = nn.Linear(in_dim, new_out_dim)
+        # copy old params
+        with torch.no_grad():
+            new_fc.weight[:out_dim] = old_weight
+            new_fc.bias[:out_dim] = old_bias
+            # keep remaining params default init
+        self.fc = new_fc
+        self.num_experts += num_new
 
     def forward(self, prompt_tokens: torch.Tensor, vit_tokens: torch.Tensor) -> torch.Tensor:
         # prompt_tokens: (B, L', d)  serve as query

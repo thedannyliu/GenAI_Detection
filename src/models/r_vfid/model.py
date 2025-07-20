@@ -16,6 +16,12 @@ try:
 except ImportError:
     open_clip = None  # type: ignore
 
+# ---------------- Dependency version checks ----------------
+try:
+    from packaging import version
+except ImportError:
+    version = None  # type: ignore
+
 try:
     from peft import LoraConfig, get_peft_model
 except ImportError:
@@ -123,6 +129,13 @@ class RvfidModel(nn.Module):
         if open_clip is None:
             raise ImportError("open_clip_torch is required but not installed.")
 
+        # Verify version requirements
+        if version is not None and hasattr(open_clip, "__version__"):
+            if version.parse(open_clip.__version__) < version.parse("2.20.0"):
+                raise RuntimeError("R-VFiD requires open_clip_torch >= 2.20.0; found " + open_clip.__version__)
+        if LoraConfig is None:
+            raise RuntimeError("R-VFiD requires the 'peft' package for LoRA support. Please install peft>=0.5.0")
+
         # 1. CLIP backbone (vision & text encoders)
         self.clip_model, _, self.clip_preprocess = open_clip.create_model_and_transforms(
             "ViT-L-14", pretrained="openai"
@@ -155,10 +168,9 @@ class RvfidModel(nn.Module):
 
         # 2b. Prompt Builder for conditioned prompt tokens
         tokenizer = open_clip.get_tokenizer("ViT-B-16")
-        # A minimal ImageNet class name list subset; should load full list in practice
-        imagenet_stub = ["dog", "cat", "person", "car", "tree", "building", "sky", "flower"]
+        # 使用完整 ImageNet-1K 類別（由 PromptBuilder 內部自動載入）
         self.prompt_builder = PromptBuilder(
-            self.clip_model, tokenizer, imagenet_stub, top_c=top_c, prompt_length=prompt_length
+            self.clip_model, tokenizer, classnames=None, top_c=top_c, prompt_length=prompt_length
         )
 
         # 3. Frequency Experts
@@ -173,6 +185,9 @@ class RvfidModel(nn.Module):
 
         # 5. Fusion layer
         self.fusion = SEFusion(in_dim=self.embed_dim * 2)
+
+        # Patch-level token fusion (concatenate -> proj)
+        self.patch_fuse_proj = nn.Linear(self.embed_dim * 2, self.embed_dim, bias=False)
 
         # 6. Classification Head (LoRA optional)
         self.classifier = nn.Linear(self.embed_dim * 2, 2)
@@ -247,7 +262,10 @@ class RvfidModel(nn.Module):
             # fuse patch tokens from freq expert k
             patch_tok = tokens_per_expert[k]
             if patch_tok.shape[1] == vit_tok_k.shape[1] - 1:
-                vit_tok_k = torch.cat([vit_tok_k[:, :1, :], vit_tok_k[:, 1:, :] + patch_tok], dim=1)
+                # Concatenate along embedding dim and project back
+                concat_tok = torch.cat([vit_tok_k[:, 1:, :], patch_tok], dim=-1)  # (B, L, 2d)
+                fused_tok = self.patch_fuse_proj(concat_tok)  # (B, L, d)
+                vit_tok_k = torch.cat([vit_tok_k[:, :1, :], fused_tok], dim=1)
 
             V_cls_list.append(vit_tok_k[:, 0, :])
             tokens_stack.append(patch_tok)
@@ -327,9 +345,40 @@ class RvfidModel(nn.Module):
 
     # ---------------- Continual Learning API ------------------
     def add_domain_prompt_and_expert(self, mode: str = "npr", embed_dim: int = 768):
-        """Add a new learnable router prompt & corresponding frequency expert."""
+        """Add a new domain (prompt + frequency expert + LoRA branch).
+
+        1. 在 RouterPromptPool 加入新 prompt (並凍結舊 prompt)。
+        2. 為 ViT 中所有 MultiLoRALinear 增加一個 LoRA expert 分支並凍結舊分支。
+        3. 增加對應 FrequencyExpert，凍結舊 expert 參數。
+        4. 擴充 Router 的 fc 輸出層。
+        """
+
+        # 1) 新 prompt
         self.router_prompt_pool.add_prompt()
-        self.experts.append(FrequencyExpert(mode=mode, embed_dim=embed_dim))  # type: ignore[arg-type]
+
+        # 2) ViT 追加 LoRA expert
+        new_idx: int | None = None
+        from .multi_lora import MultiLoRALinear  # local import to avoid cycle
+
+        for m in self.clip_model.visual.modules():
+            if isinstance(m, MultiLoRALinear):
+                new_idx = m.add_expert(r=4, lora_alpha=8)
+
+        # 3) 新 FrequencyExpert，並凍結舊 ones
+        for old_exp in self.experts:
+            for p in old_exp.parameters():
+                p.requires_grad = False
+        self.experts.append(FrequencyExpert(mode=mode, embed_dim=embed_dim, patch_level=True))  # type: ignore[arg-type]
+
+        # 4) 擴充 Router 輸出
+        self.router.add_expert(1)
+
+        # 更新計數
+        self.num_experts += 1
+
+        # 驗證 new_idx 與 self.num_experts-1 一致（僅 debug）
+        if new_idx is not None and new_idx != self.num_experts - 1:
+            print(f"[Warning] MultiLoRA new expert idx {new_idx} inconsistent with model.num_experts {self.num_experts}")
 
 
 __all__: Tuple[str, ...] = ("RvfidModel",) 

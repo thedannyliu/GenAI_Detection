@@ -336,6 +336,7 @@ Key points:
 * Built-in `compute_loss()` implements BCE + Entropy (+ placeholder InfoNCE) for quick training prototype.
 * **InfoNCE + Entropy loss** implemented via `RvfidModel.compute_loss()`; CLS token 對比 Router Prompt，並含 α 熵正則。
 * Three *true* frequency experts (`npr`, `dncnn`, `noiseprint`) with low-level filters and LoRA projection (rank-4) are registered in `frequency_expert.py`.
+* **PromptBuilder** 現已預設載入完整 *ImageNet-1K* 類別清單，並提供 `update_classnames()` 以動態擴充新類別（自動重建文字特徵 bank）。
 * `add_domain_prompt_and_expert(mode=...)` 可在訓練中即時擴充新 prompt + expert 並自動凍結舊權重。
 
 Usage example:

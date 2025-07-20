@@ -42,6 +42,20 @@ class MultiLoRALinear(nn.Module):
         self.active_idx: int = 0
 
     # --------------------------------------------------
+    def add_expert(self, r: int = 4, lora_alpha: int = 8, dropout: float = 0.0) -> int:
+        """Append a new LoRA expert branch and return its index."""
+        new_exp = LoRALinear(self.base, r=r, lora_alpha=lora_alpha, dropout=dropout)
+        # default requires_grad=True, older experts frozen by default
+        for p in new_exp.parameters():
+            p.requires_grad = True
+        # freeze old experts
+        for exp in self.experts:
+            for p in exp.parameters():
+                p.requires_grad = False
+        self.experts.append(new_exp)
+        return len(self.experts) - 1
+
+    # --------------------------------------------------
     def set_expert(self, idx: int) -> None:  # noqa: D401
         """切換目前使用的 expert 編號 (0-based)."""
         if idx < 0 or idx >= len(self.experts):
