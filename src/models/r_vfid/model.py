@@ -368,7 +368,7 @@ class RvfidModel(nn.Module):
         for old_exp in self.experts:
             for p in old_exp.parameters():
                 p.requires_grad = False
-        self.experts.append(FrequencyExpert(mode=mode, embed_dim=embed_dim, patch_level=True))  # type: ignore[arg-type]
+        self.experts.append(FrequencyExpert(mode=mode, embed_dim=self.embed_dim, patch_level=True))  # type: ignore[arg-type]
 
         # 4) 擴充 Router 輸出
         self.router.add_expert(1)
