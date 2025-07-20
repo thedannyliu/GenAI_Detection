@@ -229,12 +229,8 @@ class RvfidModel(nn.Module):
         prompt_tokens = torch.cat([static_prompt, dynamic_prompt], dim=1)  # (B, L_total, d)
 
         # --------------------
-        # Semantic tokens per expert
+        # First obtain Router α using expert-0 tokens only
         # --------------------
-
-        tokens_per_expert = [expert(images) for expert in self.experts]  # (B,L,d) ×K
-        F_list_vec = [tok.mean(dim=1) for tok in tokens_per_expert]
-        F_stack = torch.stack(F_list_vec, dim=1)  # (B,K,d)
 
         # 先用 expert-0 取語意 tokens 給 Router
         self.clip_model.visual.set_expert(0)
@@ -246,36 +242,40 @@ class RvfidModel(nn.Module):
 
         # Router α
         alpha = self.router(prompt_tokens, vit_tokens0)  # (B,K)
-        self.latest_alpha = alpha
+        self.latest_alpha = alpha  # store for loss
 
         # ------------------------------------------
-        # 迴圈各 expert → CLS token
+        # Compute each expert with α-scaled LoRA internally
         # ------------------------------------------
+
         V_cls_list = []
-        tokens_stack = []
+        F_vec_list = []
         for k in range(self.num_experts):
+            a_k = alpha[:, k].unsqueeze(-1)  # (B,1)
+
+            # --- ViT tokens with expert-k LoRA ---
             self.clip_model.visual.set_expert(k)
             vit_tok_k = self._get_visual_tokens(images)
             if vit_tok_k.size(-1) != self.embed_dim:
                 vit_tok_k = self._visual_proj(vit_tok_k)
 
-            # fuse patch tokens from freq expert k
-            patch_tok = tokens_per_expert[k]
+            # --- Frequency tokens ---
+            patch_tok = self.experts[k](images)  # (B, L, d)
             if patch_tok.shape[1] == vit_tok_k.shape[1] - 1:
-                # Concatenate along embedding dim and project back
-                concat_tok = torch.cat([vit_tok_k[:, 1:, :], patch_tok], dim=-1)  # (B, L, 2d)
-                fused_tok = self.patch_fuse_proj(concat_tok)  # (B, L, d)
+                concat_tok = torch.cat([vit_tok_k[:, 1:, :], patch_tok], dim=-1)
+                fused_tok = self.patch_fuse_proj(concat_tok)
                 vit_tok_k = torch.cat([vit_tok_k[:, :1, :], fused_tok], dim=1)
 
-            V_cls_list.append(vit_tok_k[:, 0, :])
-            tokens_stack.append(patch_tok)
+            # Scale inside expert (α) before aggregation
+            vit_tok_k_scaled = vit_tok_k[:, 0, :] * a_k  # CLS token scaled (B,d)
+            V_cls_list.append(vit_tok_k_scaled)
 
-        V_cls_stack = torch.stack(V_cls_list, dim=1)  # (B,K,d)
-        alpha_unsq = alpha.unsqueeze(-1)
-        V_cls = (alpha_unsq * V_cls_stack).sum(dim=1)  # (B,d)
+            F_vec = patch_tok.mean(dim=1) * a_k  # (B,d)
+            F_vec_list.append(F_vec)
 
-        # Low-level fused vector
-        V_freq = (alpha_unsq * F_stack).sum(dim=1)
+        # Sum directly (α already applied)
+        V_cls = torch.stack(V_cls_list, dim=1).sum(dim=1)
+        V_freq = torch.stack(F_vec_list, dim=1).sum(dim=1)
 
         # Step 5: Fusion
         V_cat = torch.cat([V_cls, V_freq], dim=-1)
