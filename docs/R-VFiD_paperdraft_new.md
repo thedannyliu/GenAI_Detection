@@ -81,7 +81,7 @@ The attention weights $\alpha \in \mathbb{R}^{N_T}$ are computed as:
 $$ \alpha = \text{Softmax}\left( \frac{q_{final} \cdot V_{pool}^T}{\sqrt{d}} \right) $$
 The final, fused feature representation $v_{final}$ is the weighted sum of all expert class tokens:
 $$ v_{final} = \sum_{k=0}^{N_T} \alpha_k v_{cls}^k $$
-This vector $v_{final}$ is then passed to a final classification head for binary prediction (real/fake). To balance expert utilization, we add a standard entropy loss $\mathcal{L}_{ent}$ on the weight distribution $\alpha$ to the main binary cross-entropy loss $\mathcal{L}_{BCE}$.
+This vector $v_{final}$ is then passed to a final classification head for binary prediction (real/fake). To balance exploration and exploitation during training, we add an Uncertainty-Guided Routing Regularization loss $\mathcal{L}_{UGRR}$ (described in Section&nbsp;3.6) on the weight distribution $\alpha$ in addition to the standard binary cross-entropy loss $\mathcal{L}_{BCE}$.
 
 #### 3.5. Continual Adaptation via Router Expansion
 Our architecture is designed for principled, zero-forgetting expansion. When a new task $T+1$ (e.g., a new generator family) is introduced:
@@ -93,6 +93,38 @@ Our architecture is designed for principled, zero-forgetting expansion. When a n
 3.  **Train:** The model is trained on the data for the new task. During this phase, the **only trainable parameters** are those of the new expert LoRA ($LoRA_{expert, T+1}$) and the new router LoRA ($LoRA_{router, T+1}$).
 
 This process allows the system to learn both *what* the new artifacts look like (via the new expert) and *how to look for them* (via the new router refinement), without altering any previously acquired knowledge. The system gracefully degrades to its generalist capabilities on unseen threats, as new LoRA modules are trained to be "quiet" on out-of-domain inputs.
+
+#### 3.6. Uncertainty-Guided Routing Regularization (UGRR)
+
+The previous versions of C-VFiD regularized the attention weights $\alpha$ with a fixed entropy penalty to prevent early collapse. However, a static entropy term implicitly encourages uniformly mixing experts even when the model has gained high confidence in a particular specialist, creating a tension between "balanced exploration" and "precise routing". We resolve this philosophical dilemma by making the regularization itself **uncertainty-aware**.
+
+1.  **Measuring routing uncertainty.**  
+    For each sample we compute the entropy
+    $$
+      H(\alpha) = -\sum_{k=0}^{N_T} \alpha_k \log \alpha_k ,
+    $$
+    where high entropy indicates confusion (uniform weights) and low entropy indicates confidence (near one-hot).
+
+2.  **Dynamic regularization.**  
+    We combine an exploration term $H(\alpha)$ with a sparsity term that rewards confident, one-hot routing,
+    $$
+      \mathcal{L}_{\text{sparse}} = -\|\alpha\|_2^{2}.
+    $$
+    Their influence is blended by a confidence-dependent coefficient
+    $$
+      \beta = \sigma\!\bigl(c\,\bigl(H(\alpha)-h_{\text{th}}\bigr)\bigr),
+    $$
+    yielding the overall UGRR loss
+    $$
+      \mathcal{L}_{\text{UGRR}}
+      =
+      \beta \, H(\alpha) - (1-\beta)\,\|\alpha\|_2^{2},
+    $$
+    where $\sigma(\cdot)$ is the sigmoid function, $c$ controls the slope, and $h_{\text{th}}$ is the entropy threshold.
+
+In the early epochs, when $H(\alpha)$ is typically high, $\beta\!\approx\!1$ and the loss behaves like the traditional entropy term, encouraging exploration and preventing premature collapse. As training proceeds and the router becomes confident, $\beta$ gradually decreases, turning the loss into a sparsity regularizer that sharpens routing decisions.
+
+We will empirically compare $\mathcal{L}_{\text{UGRR}}$ with (i) the fixed entropy penalty, (ii) pure sparsity losses such as $L_1$ or negative $L_2$, and (iii) no routing regularization in Section&nbsp;4. Our preliminary results show that UGRR achieves the most precise yet stable routing and yields the best overall AUROC.
 
 ### 4. Experiments
 (Sections 4.1-4.4 remain unchanged, as they describe the experimental setup which is still valid.)
