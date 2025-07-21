@@ -143,6 +143,29 @@ python src/training/train_gxma.py \
 Each run dumps checkpoints, TensorBoard logs, and JSON metrics to
 `results/gxma_runs/<experiment_name>/`.
 
+### C-VFiD (Hierarchical Router + Multi-Expert)
+
+We provide a lightweight training script that fine-tunes **C-VFiD** on the AIGC Detection Benchmark.
+
+```bash
+# Example (single-GPU)
+python -m src.training.train_cvfid \
+    --train_dir AIGCDetectionBenchMark/progan_train \
+    --val_dir   AIGCDetectionBenchMark/progan_val \
+    --output_dir results/cvfid_run1 \
+    --batch_size 16 \
+    --epochs 5 \
+    --gating_mode sigmoid  # multi-hot router
+```
+
+The script will:
+1. Load images using `BenchmarkImageDataset` (a thin wrapper of `torchvision.datasets.ImageFolder`).
+2. Initialise `RvfidModel` with hierarchical query head, sigmoid router, and three low-level experts.
+3. Train with AdamW, save the **best** checkpoint (highest validation AUC) under `<output_dir>/best_cvfid.pt`.
+4. Dump per-epoch metrics to `<output_dir>/history.json`.
+
+Feel free to adjust `--num_experts`, learning rate, and other hyper-parameters.
+
 ### Evaluation
 
 **Zero-shot VLM Evaluation (Custom Script):**

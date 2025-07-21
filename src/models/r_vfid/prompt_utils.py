@@ -1,5 +1,6 @@
+# pyright: reportMissingImports=false
 import functools
-from typing import List
+from typing import List, Optional
 
 import torch
 import torch.nn as nn
@@ -26,7 +27,7 @@ class PromptBuilder:
         self,
         clip_model: nn.Module,
         tokenizer,
-        classnames: List[str],
+        classnames: Optional[List[str]] = None,
         top_c: int = 5,
         prompt_length: int = 7,
         device: torch.device | str | None = None,
@@ -35,10 +36,38 @@ class PromptBuilder:
             raise ImportError("open_clip_torch is required for PromptBuilder.")
         self.clip_model = clip_model
         self.tokenizer = tokenizer
-        self.classnames = classnames
+        # -----------------------------
+        # Load default ImageNet-1K label list if not provided
+        # -----------------------------
+        if classnames is None:
+            # open_clip 自帶 1K 類別名稱 (英語) – 若版本差異導致缺失，退回簡易生成
+            if hasattr(open_clip, "IMAGENET_CLASSNAMES"):
+                classnames = list(open_clip.IMAGENET_CLASSNAMES)
+            else:
+                # Fallback: 以 'class_####' 代稱，避免程式中斷
+                classnames = [f"class_{i:04d}" for i in range(1000)]
+
+        self.classnames: List[str] = list(classnames)
         self.top_c = top_c
         self.prompt_len = prompt_length
         self.device = device or "cpu"
+        # 延遲構建，以便於子類覆寫後再初始化
+        self._build_text_features_cache()
+
+    # -----------------------------------------------------
+    # Public helpers for continual / dynamic class updates
+    # -----------------------------------------------------
+    def update_classnames(self, new_classes: List[str], rebuild: bool = True) -> None:
+        """Append novel class names and optionally rebuild the text bank."""
+        for name in new_classes:
+            if name not in self.classnames:
+                self.classnames.append(name)
+        if rebuild:
+            self._build_text_features_cache()
+
+    def set_classnames(self, classnames: List[str]) -> None:
+        """Overwrite existing class list and rebuild feature bank."""
+        self.classnames = list(classnames)
         self._build_text_features_cache()
 
     def _build_text_features_cache(self):
@@ -49,7 +78,7 @@ class PromptBuilder:
             tokenized = self.tokenizer(all_prompts).to(self.device)
             text_feats = self.clip_model.encode_text(tokenized).float()
             text_feats = F.normalize(text_feats, dim=-1)
-        self.text_feature_bank = text_feats  # shape (N_classes, d) assuming len(templates)=1
+        self.text_feature_bank = text_feats  # shape (N_classes, d)
 
     @torch.no_grad()
     def _zero_shot_topc(self, image_feats: torch.Tensor) -> List[List[str]]:

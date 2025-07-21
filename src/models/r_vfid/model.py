@@ -3,18 +3,23 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import List, Tuple
+from typing import Tuple
 
 from .frequency_expert import FrequencyExpert
 from .router import MultiheadCrossAttentionRouter
 from .multi_lora import add_multi_lora_to_vit_qkv
-from .prompt_utils import PromptBuilder
-from .router_prompt import RouterPromptPool
+from .query_head import HierarchicalSemanticQueryHead
 
 try:
     import open_clip
 except ImportError:
     open_clip = None  # type: ignore
+
+# ---------------- Dependency version checks ----------------
+try:
+    from packaging import version
+except ImportError:
+    version = None  # type: ignore
 
 try:
     from peft import LoraConfig, get_peft_model
@@ -117,11 +122,19 @@ class RvfidModel(nn.Module):
         top_c: int = 5,
         embed_dim: int | None = None,
         freeze_clip: bool = True,
+        gating_mode: str = "softmax",  # "softmax"|"sigmoid"
     ):
         super().__init__()
         self.num_experts = num_experts
         if open_clip is None:
             raise ImportError("open_clip_torch is required but not installed.")
+
+        # Verify version requirements
+        if version is not None and hasattr(open_clip, "__version__"):
+            if version.parse(open_clip.__version__) < version.parse("2.20.0"):
+                raise RuntimeError("R-VFiD requires open_clip_torch >= 2.20.0; found " + open_clip.__version__)
+        if LoraConfig is None:
+            raise RuntimeError("R-VFiD requires the 'peft' package for LoRA support. Please install peft>=0.5.0")
 
         # 1. CLIP backbone (vision & text encoders)
         self.clip_model, _, self.clip_preprocess = open_clip.create_model_and_transforms(
@@ -150,16 +163,8 @@ class RvfidModel(nn.Module):
         else:
             self.prompt_proj = nn.Identity()
 
-        # 2a. Router Prompt Pool (learnable, read-only style)
-        self.router_prompt_pool = RouterPromptPool(num_prompts=1, prompt_length=prompt_length, embed_dim=self.embed_dim)
-
-        # 2b. Prompt Builder for conditioned prompt tokens
-        tokenizer = open_clip.get_tokenizer("ViT-B-16")
-        # A minimal ImageNet class name list subset; should load full list in practice
-        imagenet_stub = ["dog", "cat", "person", "car", "tree", "building", "sky", "flower"]
-        self.prompt_builder = PromptBuilder(
-            self.clip_model, tokenizer, imagenet_stub, top_c=top_c, prompt_length=prompt_length
-        )
+        # 2. Hierarchical Semantic Query Head
+        self.query_head = HierarchicalSemanticQueryHead(embed_dim=self.embed_dim)
 
         # 3. Frequency Experts
         modes_cycle = ["npr", "dncnn", "noiseprint"]
@@ -169,10 +174,25 @@ class RvfidModel(nn.Module):
         ])
 
         # 4. Router (Cross-Attention gating)
-        self.router = MultiheadCrossAttentionRouter(self.embed_dim, num_heads=1, num_experts=num_experts)
+        self.router = MultiheadCrossAttentionRouter(
+            self.embed_dim, num_heads=1, num_experts=num_experts, gating=gating_mode
+        )
+
+        # Store gating_mode for reference
+        self.gating_mode = gating_mode
+
+        # UGRR hyperparameters
+        self.ugrr_c: float = 10.0
+        self.ugrr_hth: float = 1.0
+
+        # Entropy regularisation (ALEI-style MoE loss)
+        self.lambda_moe: float = 0.1  # weight for simple entropy term; can be tuned
 
         # 5. Fusion layer
         self.fusion = SEFusion(in_dim=self.embed_dim * 2)
+
+        # Patch-level token fusion (concatenate -> proj)
+        self.patch_fuse_proj = nn.Linear(self.embed_dim * 2, self.embed_dim, bias=False)
 
         # 6. Classification Head (LoRA optional)
         self.classifier = nn.Linear(self.embed_dim * 2, 2)
@@ -194,34 +214,12 @@ class RvfidModel(nn.Module):
     # -----------------------------------------------------
     # Utility helpers
     # -----------------------------------------------------
-    @torch.no_grad()
-    def _zero_shot_labels(self, images: torch.Tensor, c: int = 5) -> List[List[str]]:
-        """Placeholder zero-shot top-c class prediction using CLIP.
-
-        Returns list of class names per image. Current stub returns fixed labels.
-        """
-        batch_size = images.size(0)
-        return [["object"] * c for _ in range(batch_size)]
-
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         B = images.size(0)
         device = images.device
 
-        # Step 1: Router prompt (static + conditioned)
-        static_prompt = self.router_prompt_pool(B).to(device)
-        dynamic_prompt = self.prompt_builder.build(images).to(device)
-        dynamic_prompt = self.prompt_proj(dynamic_prompt)
-        prompt_tokens = torch.cat([static_prompt, dynamic_prompt], dim=1)  # (B, L_total, d)
-
-        # --------------------
-        # Semantic tokens per expert
-        # --------------------
-
-        tokens_per_expert = [expert(images) for expert in self.experts]  # (B,L,d) ×K
-        F_list_vec = [tok.mean(dim=1) for tok in tokens_per_expert]
-        F_stack = torch.stack(F_list_vec, dim=1)  # (B,K,d)
-
-        # 先用 expert-0 取語意 tokens 給 Router
+        # Step 1: Generate hierarchical semantic query from CLS token
+        # Ensure expert-0 branch active when extracting semantic tokens
         self.clip_model.visual.set_expert(0)
         vit_tokens0 = self._get_visual_tokens(images)
         if vit_tokens0.size(-1) != self.embed_dim:
@@ -229,35 +227,50 @@ class RvfidModel(nn.Module):
                 self._visual_proj = nn.Linear(vit_tokens0.size(-1), self.embed_dim, bias=False).to(device)
             vit_tokens0 = self._visual_proj(vit_tokens0)
 
+        # Extract CLS semantic embedding and build query
+        v_cls_sem = vit_tokens0[:, 0, :]  # (B,d)
+        q_final = self.query_head(v_cls_sem)  # (B,d)
+        prompt_tokens = q_final.unsqueeze(1)  # (B,1,d)
+
+        # Cache for loss terms / analysis
+        self.latest_q = q_final.detach()
+
         # Router α
         alpha = self.router(prompt_tokens, vit_tokens0)  # (B,K)
-        self.latest_alpha = alpha
+        self.latest_alpha = alpha  # store for loss
 
         # ------------------------------------------
-        # 迴圈各 expert → CLS token
+        # Compute each expert with α-scaled LoRA internally
         # ------------------------------------------
+
         V_cls_list = []
-        tokens_stack = []
+        F_vec_list = []
         for k in range(self.num_experts):
+            a_k = alpha[:, k].unsqueeze(-1)  # (B,1)
+
+            # --- ViT tokens with expert-k LoRA ---
             self.clip_model.visual.set_expert(k)
             vit_tok_k = self._get_visual_tokens(images)
             if vit_tok_k.size(-1) != self.embed_dim:
                 vit_tok_k = self._visual_proj(vit_tok_k)
 
-            # fuse patch tokens from freq expert k
-            patch_tok = tokens_per_expert[k]
+            # --- Frequency tokens ---
+            patch_tok = self.experts[k](images)  # (B, L, d)
             if patch_tok.shape[1] == vit_tok_k.shape[1] - 1:
-                vit_tok_k = torch.cat([vit_tok_k[:, :1, :], vit_tok_k[:, 1:, :] + patch_tok], dim=1)
+                concat_tok = torch.cat([vit_tok_k[:, 1:, :], patch_tok], dim=-1)
+                fused_tok = self.patch_fuse_proj(concat_tok)
+                vit_tok_k = torch.cat([vit_tok_k[:, :1, :], fused_tok], dim=1)
 
-            V_cls_list.append(vit_tok_k[:, 0, :])
-            tokens_stack.append(patch_tok)
+            # Scale inside expert (α) before aggregation
+            vit_tok_k_scaled = vit_tok_k[:, 0, :] * a_k  # CLS token scaled (B,d)
+            V_cls_list.append(vit_tok_k_scaled)
 
-        V_cls_stack = torch.stack(V_cls_list, dim=1)  # (B,K,d)
-        alpha_unsq = alpha.unsqueeze(-1)
-        V_cls = (alpha_unsq * V_cls_stack).sum(dim=1)  # (B,d)
+            F_vec = patch_tok.mean(dim=1) * a_k  # (B,d)
+            F_vec_list.append(F_vec)
 
-        # Low-level fused vector
-        V_freq = (alpha_unsq * F_stack).sum(dim=1)
+        # Sum directly (α already applied)
+        V_cls = torch.stack(V_cls_list, dim=1).sum(dim=1)
+        V_freq = torch.stack(F_vec_list, dim=1).sum(dim=1)
 
         # Step 5: Fusion
         V_cat = torch.cat([V_cls, V_freq], dim=-1)
@@ -307,10 +320,9 @@ class RvfidModel(nn.Module):
         bce = nn.functional.binary_cross_entropy_with_logits(logits[:, 1], labels.float())
 
         # ---- InfoNCE ----
-        # Anchor: per-sample mean router prompt (static part)   (B,d)
+        # Anchor: query vector itself as semantic anchor
         B = labels.size(0)
-        prompt_tokens = self.latest_prompt_tokens[:, : self.router_prompt_pool.prompt_tokens.numel() // self.router_prompt_pool.prompt_tokens.size(-1), :]  # static chunk length Ls
-        anchor = prompt_tokens.view(B, -1, prompt_tokens.size(-1)).mean(dim=1)  # (B,d)
+        anchor = self.latest_q  # (B,d)
 
         v_sem = self.latest_vcls  # (B,d)
         positives = torch.cat([v_sem], dim=0)  # (B,d)
@@ -318,18 +330,68 @@ class RvfidModel(nn.Module):
         labels_nce = torch.arange(B, device=logits.device)
         info_nce = nn.functional.cross_entropy(logits_sim, labels_nce)
 
-        # ---- Entropy ----
+        # ---- UGRR Loss ----
         alpha = self.latest_alpha  # (B, K)
-        entropy = (-alpha * (alpha + 1e-8).log()).sum(dim=-1).mean()
+        entropy = (-alpha * (alpha + 1e-8).log()).sum(dim=-1)  # (B,)
+        l2_sq = (alpha.pow(2).sum(dim=-1))  # (B,)
+        beta = torch.sigmoid(self.ugrr_c * (entropy - self.ugrr_hth))  # (B,)
+        ugrr = (beta * entropy - (1 - beta) * l2_sq).mean()
 
-        total = bce + 0.1 * info_nce + 0.01 * entropy
+        # Optional plain entropy regulariser (λ·H(α))
+        moe_entropy = entropy.mean()
+
+        total = (
+            bce
+            + 0.1 * info_nce
+            + 0.01 * ugrr
+            + self.lambda_moe * moe_entropy
+        )
         return total
 
     # ---------------- Continual Learning API ------------------
     def add_domain_prompt_and_expert(self, mode: str = "npr", embed_dim: int = 768):
-        """Add a new learnable router prompt & corresponding frequency expert."""
-        self.router_prompt_pool.add_prompt()
-        self.experts.append(FrequencyExpert(mode=mode, embed_dim=embed_dim))  # type: ignore[arg-type]
+        """Add a new domain (prompt + frequency expert + LoRA branch).
+
+        1. 在 RouterPromptPool 加入新 prompt (並凍結舊 prompt)。
+        2. 為 ViT 中所有 MultiLoRALinear 增加一個 LoRA expert 分支並凍結舊分支。
+        3. 增加對應 FrequencyExpert，凍結舊 expert 參數。
+        4. 擴充 Router 的 fc 輸出層。
+        """
+
+        # 1) New Query Head adapter (LoRA correction)
+        self.query_head.add_adapter(r=4, lora_alpha=8)
+
+        # 2) ViT 追加 LoRA expert
+        new_idx: int | None = None
+        from .multi_lora import MultiLoRALinear  # local import to avoid cycle
+
+        for m in self.clip_model.visual.modules():
+            if isinstance(m, MultiLoRALinear):
+                new_idx = m.add_expert(r=4, lora_alpha=8)
+
+        # 3) 新 FrequencyExpert，並凍結舊 ones
+        for old_exp in self.experts:
+            for p in old_exp.parameters():
+                p.requires_grad = False
+        self.experts.append(FrequencyExpert(mode=mode, embed_dim=self.embed_dim, patch_level=True))  # type: ignore[arg-type]
+
+        # 4) 擴充 Router 輸出
+        self.router.add_expert(1)
+
+        # 5) Freeze projection layers that existed before (e.g., prompt_proj)
+        new_param_ids = {id(p) for p in self.query_head.adapters[-1].parameters()}
+        new_param_ids.update(id(p) for p in self.experts[-1].parameters())
+
+        for param in self.parameters():
+            if id(param) not in new_param_ids:
+                param.requires_grad = False
+
+        # 更新計數
+        self.num_experts += 1
+
+        # 驗證 new_idx 與 self.num_experts-1 一致（僅 debug）
+        if new_idx is not None and new_idx != self.num_experts - 1:
+            print(f"[Warning] MultiLoRA new expert idx {new_idx} inconsistent with model.num_experts {self.num_experts}")
 
 
 __all__: Tuple[str, ...] = ("RvfidModel",) 

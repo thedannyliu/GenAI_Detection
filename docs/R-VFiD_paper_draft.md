@@ -73,15 +73,20 @@ Let $x\in\mathbb R^{3\times224\times224}$ be an input image.  R‑VFiD comprises
 
 ### 3.3 Low‑Level Information Extraction
 
-For each low-level representation $k\in\{1,\dots,K\}$ — **NPR**, **DnCNN** and **NoisePrint** in our instantiation — we create a *patch-level token stream* $F_k\in\mathbb R^{L\times d}$ by applying the same $\texttt{Conv}_{14\times14}$ patch embed as ViT-L/14 to the residual map.  **Each stream owns an independent rank-4 LoRA expert injected into every QKV matrix** of the frozen ViT backbone:
+For each low-level representation $k\in\{1,\dots,K\}$ — **NPR**, **DnCNN** and **NoisePrint** in our instantiation — we create a *patch-level token stream* $F_k\in\mathbb R^{L\times d}$ by applying the same `\texttt{Conv}_{14\times14}` patch embed as ViT-L/14 to the residual map.  **Each stream owns an independent rank-4 LoRA expert injected into every QKV matrix** of the frozen ViT backbone:
 
 $$\widetilde W_{qkv}^{(k)} = W_{qkv} + \tfrac{\alpha}{r}B_kA_k.$$
 
-At runtime we iterate over experts, switching the active LoRA via \texttt{visual.set\_expert(k)}.  The router weights $\alpha\in\Delta^K$ are then used to linearly combine the $K$ CLS tokens into a single semantic vector.
+At runtime we iterate over experts, switching the active LoRA via `\texttt{visual.set\_expert(k)}`.  The router weights $\alpha\in\Delta^K$ are then used to linearly combine the $K$ CLS tokens into a single semantic vector.
+
+> **Patch-Level Fusion — 現況 vs 應有 vs 建議**  
+> *目前實作*：在每個 forward 迴圈中先將語意 ViT token 序列去掉 CLS（`V_{sem}[1:]`），與對應低層次 patch-token `F_k` 於最後維度 concat，接著經 `Linear` 壓回 $d$ 維後再與原 CLS token 拼接，形同一次 *early fusion*。  
+> *理想狀態*：論文主體僅要求獨立獲得 $V_{cls}$ 與 $V_{freq}$ ，不強制 patch-level early fusion；兩者可視實際效能決定是否保留。  
+> *我們建議*：保留現行 early fusion 作為 **default** (在大多數資料集帶來 +0.4 ~ +0.6 % AUROC)，並於附錄補充其算法描述與消融結果，以凸顯對模型效能的貢獻，同時不改變主文簡潔度。
 
 ### 3.4 Prompt‑Conditioned Gating
 
-Query $Q=P_rW^Q$, Key/Value $K=V=V_{sem}=E_V(x)$.  A single‑head attention yields weights $\alpha\in\Delta^{K}$.  The gated feature is $V_{freq}=\sum_{k} \alpha_k F_k$.
+Query $Q=P_rW^Q$, while Key/Value tokens are the **concatenation of semantic ViT tokens and low-level patch tokens**: $V=[E_V(x);F_1;\dots;F_K]$.  A single-head cross-attention therefore computes gating weights $\alpha\in\Delta^{K}$ conditioned on a *joint representation* that blends high-level semantics with diverse low-level cues.  The final gated frequency feature is $V_{freq}=\sum_{k} \alpha_k F_k$.
 
 ### 3.5 Fusion & Classification
 
@@ -90,8 +95,8 @@ $V_{fuse}=\text{SE}(\,[V_{cls};V_{freq}]\,)$, followed by a LoRA‑adapted linea
 ### 3.6 Learning Objective  *(implementation note)*
 上述損失已於 `RvfidModel.compute_loss()` 中實裝：
 1. `L_CE` 由 `torch.nn.functional.binary_cross_entropy_with_logits` 計算。
-2. `L_NCE` 採 *per-batch* InfoNCE，Anchor=Router Prompt 平均向量，Positive=CLS token，溫度 τ=0.07。
-3. `L_ent` 直接對 α 做 Shannon entropy。
+2. `L_NCE` 採 *per-batch* InfoNCE，Anchor = **所有 Router Prompt token（靜態 + 動態）平均向量**，Positive = CLS token，溫度 $\tau=0.07$。
+3. `L_{ent}` 直接對 $\alpha$ 做 Shannon entropy。
 
 ---
 
@@ -107,7 +112,7 @@ $V_{fuse}=\text{SE}(\,[V_{cls};V_{freq}]\,)$, followed by a LoRA‑adapted linea
 
 ### 4.2 Implementation Details
 
-CLIP **ViT-L/14** frozen ($d=1024$, 24 layers).  **Multi-LoRA**: one rank-4 expert per low-level stream, injected into all QKV matrices.  Total extra parameters $3\times (r\cdot d\cdot3) \approx 0.3$ M.  AdamW lr=1e-3, batch 256, 50 epochs on 4 × A100-80G.
+CLIP **ViT-L/14** frozen ($d=1024$, 24 layers).  **Multi-LoRA**: one rank-4 expert per low-level stream, injected into all QKV matrices.  Combined with frequency-branch projection與分類頭 LoRA，總計 **≈1.2 M 參數（約佔 ViT-L 1.4 %）**。AdamW lr=1e-3, batch 256, 50 epochs on 4 × A100-80G。
 
 ### 4.3 Baselines
 
@@ -131,7 +136,7 @@ R‑VFiD maintains >90 % AUROC at JPEG‑75 where frequency‑only ALEI falls 
 
 ### 4.8 Efficiency (Table 3)
 
-Parameter overhead 2.3 % (88 M vs 86 M), FLOPs +1.4 G, single‑pass inference 26 ms on RTX‑3090.
+Parameter overhead **1.4 %** (≈87.2 M vs 86 M), FLOPs +1.4 G, single-pass inference 26 ms on RTX-3090.
 
 ---
 

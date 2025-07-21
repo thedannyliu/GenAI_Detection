@@ -1,0 +1,29 @@
+train_dir: "AIGCDetectionBenchMark/progan_train"
+val_dir: "AIGCDetectionBenchMark/progan_val"
+output_dir: "results/cvfid_replication"
+
+# Model hyperparameters
+num_experts: 3
+gating_mode: "sigmoid"
+
+# Optimisation
+epochs: 5
+batch_size: 16
+lr: 1e-4
+weight_decay: 1e-4
+
+# Gradient Accumulation
+gradient_accumulation_steps: 1  # set >1 to emulate larger batch
+
+# Filter classes (optional)
+allowed_classes: ["car", "cat", "chair", "horse"]
+
+# Hardware
+#   Single GPU: "0"   |  Multi-GPU (DataParallel): "0,1,2,3"
+gpus: "0,1,2"
+
+# Checkpointing / Resume
+resume: null  # path to .pt checkpoint to resume from
+
+# Misc.
+seed: 42 

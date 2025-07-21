@@ -336,23 +336,29 @@ Key points:
 * Built-in `compute_loss()` implements BCE + Entropy (+ placeholder InfoNCE) for quick training prototype.
 * **InfoNCE + Entropy loss** implemented via `RvfidModel.compute_loss()`; CLS token 對比 Router Prompt，並含 α 熵正則。
 * Three *true* frequency experts (`npr`, `dncnn`, `noiseprint`) with low-level filters and LoRA projection (rank-4) are registered in `frequency_expert.py`.
+* **PromptBuilder** 現已預設載入完整 *ImageNet-1K* 類別清單，並提供 `update_classnames()` 以動態擴充新類別（自動重建文字特徵 bank）。
 * `add_domain_prompt_and_expert(mode=...)` 可在訓練中即時擴充新 prompt + expert 並自動凍結舊權重。
 
-Usage example:
+### Recent Updates (2025-07)
 
-```python
-import torch
-from src.models.r_vfid import RvfidModel
+The implementation has been significantly extended to align more closely with the AAAI 2026 draft:
 
-# dummy batch of normalised images (B,3,224,224)
-images = torch.randn(8, 3, 224, 224)
+* **Full ImageNet-1K class list** is now loaded by default inside `PromptBuilder`; the class-feature bank can be refreshed at runtime via `update_classnames()` / `set_classnames()` for continual streams.
+* `MultiLoRALinear` now exposes read-only `.weight` / `.bias` attributes pointing to the frozen base projection, ensuring compatibility with 3rd-party code (e.g. `open_clip`’s internal calls).
+* A **robust injection pipeline** guarantees that at least one attention projection inside the CLIP Visual Transformer is wrapped by `MultiLoRALinear`; warning messages are emitted if the normal path fails.
+* `MultiLoRALinear.add_expert()` & `MultiheadCrossAttentionRouter.add_expert()` enable **on-the-fly expansion** when a new generator domain arrives.  `RvfidModel.add_domain_prompt_and_expert()` orchestrates:
+  1. Adds a new read-only router prompt.
+  2. Appends a fresh LoRA branch to **every** wrapped Q/K/V projection; previously inserted branches are frozen.
+  3. Installs a matching `FrequencyExpert` and freezes older experts.
+  4. Expands the router’s output layer so its α-weights cover the new branch.
+* **Patch-token fusion** now concatenates ViT tokens with frequency-patch tokens `(d → 2d)` and projects back to `d` via a learnable linear layer (`patch_fuse_proj`) instead of naïve element-wise addition.
+* Hard version checks for `open_clip_torch ≥ 2.20` and `peft ≥ 0.5` are enforced at model init; these are reflected in `requirements.txt` (plus `packaging`).
 
-model = RvfidModel(num_experts=3)
-logits = model(images)  # shape: (8, 2)
-probs  = logits.softmax(dim=-1)[:, 1]  # P(fake)
-print(probs)
-```
+All unit tests in `tests/` cover:
 
-The current implementation uses *stub* frequency experts.  To plug in real LoRA-based experts, extend `SimpleFrequencyExpert` or replace it with a PEFT-injected ViT block wrapper. 
+* Shape integrity (`test_r_vfid.py`)
+* LoRA injection & switching (`test_multi_lora.py`)
+* Prompt builder dynamics (`test_prompt_builder_dynamic.py`)
+* Continual expert growth (`test_dynamic_expert_addition.py`)
 
-* Basic shape integrity tests live in `tests/test_r_vfid.py` (pytest).  Run `pytest -q` after installing dev dependencies.
+Run `pytest -q` after installation to verify a healthy setup.

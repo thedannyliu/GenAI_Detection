@@ -41,6 +41,35 @@ class MultiLoRALinear(nn.Module):
         )
         self.active_idx: int = 0
 
+    # ---------------- Proxy attributes ----------------
+    # Certain external modules (e.g., torch.nn.MultiheadAttention) directly access
+    # `linear.weight` / `linear.bias` attributes instead of calling forward().
+    # Provide read-only proxy to underlying *frozen* base weight so that such code
+    # does not raise AttributeError.  LoRA 更新僅在 forward 過程中生效，
+    # 但這些側路操作通常出現在推論前後的線性投影 (如 out_proj) 對梯度影響輕微。
+
+    @property  # type: ignore[override]
+    def weight(self):  # noqa: D401
+        return self.base.weight
+
+    @property  # type: ignore[override]
+    def bias(self):  # noqa: D401
+        return self.base.bias
+
+    # --------------------------------------------------
+    def add_expert(self, r: int = 4, lora_alpha: int = 8, dropout: float = 0.0) -> int:
+        """Append a new LoRA expert branch and return its index."""
+        new_exp = LoRALinear(self.base, r=r, lora_alpha=lora_alpha, dropout=dropout)
+        # default requires_grad=True, older experts frozen by default
+        for p in new_exp.parameters():
+            p.requires_grad = True
+        # freeze old experts
+        for exp in self.experts:
+            for p in exp.parameters():
+                p.requires_grad = False
+        self.experts.append(new_exp)
+        return len(self.experts) - 1
+
     # --------------------------------------------------
     def set_expert(self, idx: int) -> None:  # noqa: D401
         """切換目前使用的 expert 編號 (0-based)."""
@@ -87,6 +116,7 @@ def add_multi_lora_to_vit_qkv(
         if hasattr(visual, attr_name):
             candidate_containers.append(getattr(visual, attr_name))
 
+    injected_cnt = 0
     for container in candidate_containers:
         block_iter = (
             container
@@ -105,6 +135,7 @@ def add_multi_lora_to_vit_qkv(
             # unified qkv Linear
             if hasattr(attn, "qkv") and isinstance(attn.qkv, nn.Linear):
                 attn.qkv = MultiLoRALinear(attn.qkv, num_experts, r=r, lora_alpha=lora_alpha)
+                injected_cnt += 1
             else:
                 # separate projections
                 for proj_name in ["q_proj", "k_proj", "v_proj", "q", "k", "v"]:
@@ -113,6 +144,30 @@ def add_multi_lora_to_vit_qkv(
                             getattr(attn, proj_name), num_experts, r=r, lora_alpha=lora_alpha
                         )
                         setattr(attn, proj_name, new_layer)
+                        injected_cnt += 1
+
+    # --------------------------------------------------------------
+    # Secondary pass: wrap *all* Linear layers whose module path indicates
+    # they belong to an attention block (attn/attention) – covers variant
+    # naming schemes in open_clip.
+    # --------------------------------------------------------------
+    if injected_cnt == 0:
+        for name, module in list(visual.named_modules()):
+            if not isinstance(module, nn.Linear):
+                continue
+            # Heuristic: at least one of the parent segments mentions attention
+            if any(seg in name for seg in ["attn", "attention", "q_proj", "k_proj", "v_proj", "qkv"]):
+                parent_path = name.rsplit(".", 1)[0]
+                parent = visual
+                for attr in parent_path.split(".") if parent_path else []:
+                    parent = getattr(parent, attr)
+                attr_name = name.split(".")[-1]
+                if isinstance(getattr(parent, attr_name), nn.Linear):
+                    setattr(parent, attr_name, MultiLoRALinear(module, num_experts, r=r, lora_alpha=lora_alpha))
+                    injected_cnt += 1
+        # After batch wrapping, continue even if only some found – will still work with set_expert.
+
+    # Final fallback removed; rely on attention-based search.
 
     # ------------------------------------------------------------------
     # attach helper to visual for global switching
