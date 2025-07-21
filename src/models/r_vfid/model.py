@@ -185,6 +185,9 @@ class RvfidModel(nn.Module):
         self.ugrr_c: float = 10.0
         self.ugrr_hth: float = 1.0
 
+        # Entropy regularisation (ALEI-style MoE loss)
+        self.lambda_moe: float = 0.1  # weight for simple entropy term; can be tuned
+
         # 5. Fusion layer
         self.fusion = SEFusion(in_dim=self.embed_dim * 2)
 
@@ -334,7 +337,15 @@ class RvfidModel(nn.Module):
         beta = torch.sigmoid(self.ugrr_c * (entropy - self.ugrr_hth))  # (B,)
         ugrr = (beta * entropy - (1 - beta) * l2_sq).mean()
 
-        total = bce + 0.1 * info_nce + 0.01 * ugrr
+        # Optional plain entropy regulariser (λ·H(α))
+        moe_entropy = entropy.mean()
+
+        total = (
+            bce
+            + 0.1 * info_nce
+            + 0.01 * ugrr
+            + self.lambda_moe * moe_entropy
+        )
         return total
 
     # ---------------- Continual Learning API ------------------
@@ -366,6 +377,14 @@ class RvfidModel(nn.Module):
 
         # 4) 擴充 Router 輸出
         self.router.add_expert(1)
+
+        # 5) Freeze projection layers that existed before (e.g., prompt_proj)
+        new_param_ids = {id(p) for p in self.query_head.adapters[-1].parameters()}
+        new_param_ids.update(id(p) for p in self.experts[-1].parameters())
+
+        for param in self.parameters():
+            if id(param) not in new_param_ids:
+                param.requires_grad = False
 
         # 更新計數
         self.num_experts += 1

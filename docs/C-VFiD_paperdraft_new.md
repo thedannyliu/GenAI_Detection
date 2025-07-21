@@ -1,5 +1,5 @@
 %% =====================
-%% R-VFiD ‑ AAAI 2026 Draft Manuscript - v3
+%% C-VFiD ‑ AAAI 2026 Draft Manuscript - v3
 %% =====================
 
 C-VFiD: A Continual Vision-Frequency Detector for Open-World AI-Generated Image Detection

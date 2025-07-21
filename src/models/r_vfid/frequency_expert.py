@@ -40,24 +40,61 @@ def _lanczos_downsample(x: torch.Tensor, scale: float = 0.5) -> torch.Tensor:
 
 
 class _DnCNN(nn.Module):
-    """Tiny 3-layer DnCNN-style denoiser (placeholder)."""
+    """Full DnCNN denoiser (Zhang et al., 2017).
 
-    def __init__(self, channels: int = 3):
+    Default configuration follows the paper for colour images:
+      • depth = 20 convolutional layers
+      • 64 feature maps per layer
+      • BatchNorm in all layers except the first & last
+
+    The original DnCNN is trained to predict the *residual* (noise).  For ease
+    of integration with ``FrequencyExpert`` we **return the denoised image**
+    (i.e. ``x - residual``).  Downstream code then computes
+    ``noise = x - denoised`` to obtain the residual magnitude, identical to
+    the conventional formulation.
+    """
+
+    def __init__(
+        self,
+        channels: int = 3,
+        depth: int = 20,
+        features: int = 64,
+        bias: bool = False,
+    ) -> None:
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Conv2d(channels, 32, 3, padding=1), nn.ReLU(inplace=True),
-            nn.Conv2d(32, 32, 3, padding=1), nn.ReLU(inplace=True),
-            nn.Conv2d(32, channels, 3, padding=1),
-        )
-        # Initialise as identity (so residual ≈ 0) – easier convergence
-        for m in self.net.modules():
+
+        layers: list[nn.Module] = []
+
+        # 1) First layer (Conv + ReLU)
+        layers.append(nn.Conv2d(channels, features, kernel_size=3, padding=1, bias=bias))
+        layers.append(nn.ReLU(inplace=True))
+
+        # 2) Middle layers (Conv + BN + ReLU)
+        for _ in range(depth - 2):
+            layers.append(nn.Conv2d(features, features, kernel_size=3, padding=1, bias=bias))
+            layers.append(nn.BatchNorm2d(features))
+            layers.append(nn.ReLU(inplace=True))
+
+        # 3) Last layer (Conv)
+        layers.append(nn.Conv2d(features, channels, kernel_size=3, padding=1, bias=bias))
+
+        self.net = nn.Sequential(*layers)
+
+        # -------- Weight initialisation --------
+        for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                nn.init.zeros_(m.weight)
+                nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
 
+    # ------------------------------------------------------------
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+        residual = self.net(x)  # predicted noise
+        denoised = x - residual
+        return denoised
 
 
 # ------------------------------------------------------------

@@ -42,12 +42,32 @@ class BenchmarkImageDataset(datasets.ImageFolder):
         self,
         root: str | Path,
         transform: Optional[Callable] = None,
+        allowed_classes: Optional[list[str]] = None,
     ) -> None:
+        """Parameters
+        ----------
+        root : str | Path
+            Directory organised for ``torchvision.datasets.ImageFolder``.
+        transform : Callable, optional
+            Data augmentation / preprocessing.
+        allowed_classes : list[str], optional
+            If given, only samples whose *original class folder name* matches one
+            of these strings will be kept.  Folder name matching is case-
+            insensitive.  This is useful to restrict ProGAN training to the
+            four LSUN categories (car, cat, chair, horse) required by ALEI.
+        """
         transform = transform or build_default_transform()
         super().__init__(root=str(root), transform=transform)
 
+        # If allowed_classes specified, filter indices
+        if allowed_classes is not None:
+            allowed_lower = {c.lower() for c in allowed_classes}
+            keep_indices = [i for i, y in enumerate(self.targets) if self.classes[y].lower() in allowed_lower]
+            # Subset samples & targets
+            self.samples = [self.samples[i] for i in keep_indices]
+            self.targets = [self.targets[i] for i in keep_indices]
+
         # Build mapping from ImageFolder targets → binary label
-        # Heuristic: folder name containing "real" → 0 else 1.
         self.binary_targets = [0 if "real" in self.classes[y].lower() else 1 for y in self.targets]
 
     def __getitem__(self, index):
