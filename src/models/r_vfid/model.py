@@ -3,13 +3,12 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import List, Tuple
+from typing import Tuple
 
 from .frequency_expert import FrequencyExpert
 from .router import MultiheadCrossAttentionRouter
 from .multi_lora import add_multi_lora_to_vit_qkv
-from .prompt_utils import PromptBuilder
-from .router_prompt import RouterPromptPool
+from .query_head import HierarchicalSemanticQueryHead
 
 try:
     import open_clip
@@ -123,6 +122,7 @@ class RvfidModel(nn.Module):
         top_c: int = 5,
         embed_dim: int | None = None,
         freeze_clip: bool = True,
+        gating_mode: str = "softmax",  # "softmax"|"sigmoid"
     ):
         super().__init__()
         self.num_experts = num_experts
@@ -163,15 +163,8 @@ class RvfidModel(nn.Module):
         else:
             self.prompt_proj = nn.Identity()
 
-        # 2a. Router Prompt Pool (learnable, read-only style)
-        self.router_prompt_pool = RouterPromptPool(num_prompts=1, prompt_length=prompt_length, embed_dim=self.embed_dim)
-
-        # 2b. Prompt Builder for conditioned prompt tokens
-        tokenizer = open_clip.get_tokenizer("ViT-B-16")
-        # 使用完整 ImageNet-1K 類別（由 PromptBuilder 內部自動載入）
-        self.prompt_builder = PromptBuilder(
-            self.clip_model, tokenizer, classnames=None, top_c=top_c, prompt_length=prompt_length
-        )
+        # 2. Hierarchical Semantic Query Head
+        self.query_head = HierarchicalSemanticQueryHead(embed_dim=self.embed_dim)
 
         # 3. Frequency Experts
         modes_cycle = ["npr", "dncnn", "noiseprint"]
@@ -181,7 +174,16 @@ class RvfidModel(nn.Module):
         ])
 
         # 4. Router (Cross-Attention gating)
-        self.router = MultiheadCrossAttentionRouter(self.embed_dim, num_heads=1, num_experts=num_experts)
+        self.router = MultiheadCrossAttentionRouter(
+            self.embed_dim, num_heads=1, num_experts=num_experts, gating=gating_mode
+        )
+
+        # Store gating_mode for reference
+        self.gating_mode = gating_mode
+
+        # UGRR hyperparameters
+        self.ugrr_c: float = 10.0
+        self.ugrr_hth: float = 1.0
 
         # 5. Fusion layer
         self.fusion = SEFusion(in_dim=self.embed_dim * 2)
@@ -209,36 +211,26 @@ class RvfidModel(nn.Module):
     # -----------------------------------------------------
     # Utility helpers
     # -----------------------------------------------------
-    @torch.no_grad()
-    def _zero_shot_labels(self, images: torch.Tensor, c: int = 5) -> List[List[str]]:
-        """Placeholder zero-shot top-c class prediction using CLIP.
-
-        Returns list of class names per image. Current stub returns fixed labels.
-        """
-        batch_size = images.size(0)
-        return [["object"] * c for _ in range(batch_size)]
-
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         B = images.size(0)
         device = images.device
 
-        # Step 1: Router prompt (static + conditioned)
-        static_prompt = self.router_prompt_pool(B).to(device)
-        dynamic_prompt = self.prompt_builder.build(images).to(device)
-        dynamic_prompt = self.prompt_proj(dynamic_prompt)
-        prompt_tokens = torch.cat([static_prompt, dynamic_prompt], dim=1)  # (B, L_total, d)
-
-        # --------------------
-        # First obtain Router α using expert-0 tokens only
-        # --------------------
-
-        # 先用 expert-0 取語意 tokens 給 Router
+        # Step 1: Generate hierarchical semantic query from CLS token
+        # Ensure expert-0 branch active when extracting semantic tokens
         self.clip_model.visual.set_expert(0)
         vit_tokens0 = self._get_visual_tokens(images)
         if vit_tokens0.size(-1) != self.embed_dim:
             if not hasattr(self, "_visual_proj"):
                 self._visual_proj = nn.Linear(vit_tokens0.size(-1), self.embed_dim, bias=False).to(device)
             vit_tokens0 = self._visual_proj(vit_tokens0)
+
+        # Extract CLS semantic embedding and build query
+        v_cls_sem = vit_tokens0[:, 0, :]  # (B,d)
+        q_final = self.query_head(v_cls_sem)  # (B,d)
+        prompt_tokens = q_final.unsqueeze(1)  # (B,1,d)
+
+        # Cache for loss terms / analysis
+        self.latest_q = q_final.detach()
 
         # Router α
         alpha = self.router(prompt_tokens, vit_tokens0)  # (B,K)
@@ -325,10 +317,9 @@ class RvfidModel(nn.Module):
         bce = nn.functional.binary_cross_entropy_with_logits(logits[:, 1], labels.float())
 
         # ---- InfoNCE ----
-        # Anchor: per-sample mean router prompt (static part)   (B,d)
+        # Anchor: query vector itself as semantic anchor
         B = labels.size(0)
-        prompt_tokens = self.latest_prompt_tokens[:, : self.router_prompt_pool.prompt_tokens.numel() // self.router_prompt_pool.prompt_tokens.size(-1), :]  # static chunk length Ls
-        anchor = prompt_tokens.view(B, -1, prompt_tokens.size(-1)).mean(dim=1)  # (B,d)
+        anchor = self.latest_q  # (B,d)
 
         v_sem = self.latest_vcls  # (B,d)
         positives = torch.cat([v_sem], dim=0)  # (B,d)
@@ -336,11 +327,14 @@ class RvfidModel(nn.Module):
         labels_nce = torch.arange(B, device=logits.device)
         info_nce = nn.functional.cross_entropy(logits_sim, labels_nce)
 
-        # ---- Entropy ----
+        # ---- UGRR Loss ----
         alpha = self.latest_alpha  # (B, K)
-        entropy = (-alpha * (alpha + 1e-8).log()).sum(dim=-1).mean()
+        entropy = (-alpha * (alpha + 1e-8).log()).sum(dim=-1)  # (B,)
+        l2_sq = (alpha.pow(2).sum(dim=-1))  # (B,)
+        beta = torch.sigmoid(self.ugrr_c * (entropy - self.ugrr_hth))  # (B,)
+        ugrr = (beta * entropy - (1 - beta) * l2_sq).mean()
 
-        total = bce + 0.1 * info_nce + 0.01 * entropy
+        total = bce + 0.1 * info_nce + 0.01 * ugrr
         return total
 
     # ---------------- Continual Learning API ------------------
@@ -353,8 +347,8 @@ class RvfidModel(nn.Module):
         4. 擴充 Router 的 fc 輸出層。
         """
 
-        # 1) 新 prompt
-        self.router_prompt_pool.add_prompt()
+        # 1) New Query Head adapter (LoRA correction)
+        self.query_head.add_adapter(r=4, lora_alpha=8)
 
         # 2) ViT 追加 LoRA expert
         new_idx: int | None = None
