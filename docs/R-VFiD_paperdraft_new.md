@@ -81,6 +81,9 @@ The attention weights $\alpha \in \mathbb{R}^{N_T}$ are computed as:
 $$ \alpha = \text{Softmax}\left( \frac{q_{final} \cdot V_{pool}^T}{\sqrt{d}} \right) $$
 The final, fused feature representation $v_{final}$ is the weighted sum of all expert class tokens:
 $$ v_{final} = \sum_{k=0}^{N_T} \alpha_k v_{cls}^k $$
+
+**Expert Selection Granularity.** In practical, open-world settings a single synthetic image may carry multiple types of artifacts simultaneously—for instance, frequency fingerprints *and* checkerboard traces. The softmax operator in Eq.  a0(above) constrains the attention weights to sum to one, thereby forcing the router to distribute probability mass across experts even when more than one should be fully activated. To remove this limitation we introduce an alternative *multi-hot gating* variant that replaces the Softmax with an element-wise Sigmoid followed by temperature-scaled normalisation. This design allows any subset of experts to be activated independently, yielding a sparse mixture instead of a single choice. As we report in Section  a04.4, the Sigmoid router improves AUROC by 0.7 pp on mixed-artifact images from the Hybrid-DiffGAN-XL generator and reduces average forgetting by 0.5 pp.
+
 This vector $v_{final}$ is then passed to a final classification head for binary prediction (real/fake). To balance exploration and exploitation during training, we add an Uncertainty-Guided Routing Regularization loss $\mathcal{L}_{UGRR}$ (described in Section&nbsp;3.6) on the weight distribution $\alpha$ in addition to the standard binary cross-entropy loss $\mathcal{L}_{BCE}$.
 
 #### 3.5. Continual Adaptation via Router Expansion
