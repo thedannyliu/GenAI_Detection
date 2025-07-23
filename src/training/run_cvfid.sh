@@ -12,22 +12,22 @@ mkdir -p $LOG_DIR
 echo "===== Phase-1: Expert Pre-training ====="
 for M in npr dncnn noiseprint; do
   echo "--- Training expert: $M ---"
-  python -m src.training.train_cvfid_expert \
+  torchrun --nproc_per_node=3 -m src.training.train_cvfid_expert \
       --train_dir $TRAIN --val_dir $VAL \
       --output_dir ckpts/$M --expert_mode $M \
-      --epochs 10 --batch_size 128 \
-      --gradient_accumulation_steps 1 --log_interval 100 2>&1 | tee $LOG_DIR/expert_$M.log
+      --epochs 10 --batch_size 64 \
+      --gradient_accumulation_steps 2 --log_interval 100 2>&1 | tee $LOG_DIR/expert_$M.log
 done
 
 echo "===== Phase-2: Fusion / Router Fine-tune ====="
-python -m src.training.train_cvfid_stage2 \
+torchrun --nproc_per_node=3 -m src.training.train_cvfid_stage2 \
     --train_dir $TRAIN --val_dir $VAL \
     --output_dir results/stage2 \
     --ckpt_npr ckpts/npr/best_expert.pt \
     --ckpt_dncnn ckpts/dncnn/best_expert.pt \
     --ckpt_noiseprint ckpts/noiseprint/best_expert.pt \
-    --epochs 10 --batch_size 128 --gating_mode sigmoid \
-    --gradient_accumulation_steps 1 --log_interval 100 2>&1 | tee $LOG_DIR/stage2.log
+    --epochs 10 --batch_size 64 --gating_mode sigmoid \
+    --gradient_accumulation_steps 2 --log_interval 100 2>&1 | tee $LOG_DIR/stage2.log
 
 echo "===== Phase-3: Benchmark Evaluation ====="
 python -m src.evaluation.eval_cvfid_benchmark \

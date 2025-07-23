@@ -71,3 +71,5 @@ htmlcov/
 coverage.xml
 
 AIGCDetectionBenchMark/
+
+logs/
