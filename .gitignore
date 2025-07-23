@@ -64,7 +64,7 @@ tensorboard/
 
 # Weights & Biases
 wandb/
-
+ckpts/
 # Test coverage
 .coverage
 htmlcov/
